@@ -1,0 +1,24 @@
+{
+  "name": "kx-event-tracking",
+  "version": "1.0.0",
+  "description": "Event tracking system with decorators and CDK infrastructure",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "clean": "pnpm -r clean",
+    "build-and-publish": "./build-and-publish.sh",
+    "version-bump": "./build-and-publish.sh"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
+

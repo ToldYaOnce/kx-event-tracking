@@ -1,0 +1,16 @@
+{
+  "name": "kx-events-examples",
+  "version": "1.0.0",
+  "description": "Usage examples for KX Event Tracking system",
+  "private": true,
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "kx-events-decorators": "workspace:*",
+    "@types/aws-lambda": "^8.10.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
