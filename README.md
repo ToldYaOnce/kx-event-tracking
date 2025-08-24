@@ -145,10 +145,15 @@ cd packages/kx-events-cdk
 pnpm run cdk deploy
 ```
 
-### 4. Use in Your Lambda Functions
+### 4. Install and Use in Your Lambda Functions
+
+```bash
+# Install from GitHub Packages
+npm install @toldyaonce/kx-events-decorators
+```
 
 ```typescript
-import { EventTracking } from 'kx-events-decorators';
+import { EventTracking } from '@toldyaonce/kx-events-decorators';
 
 class UserService {
   @EventTracking('user', 'user_created', {
@@ -189,7 +194,7 @@ interface TrackedEvent {
 ### API Handler with Decorator
 
 ```typescript
-import { EventTracking } from 'kx-events-decorators';
+import { EventTracking } from '@toldyaonce/kx-events-decorators';
 import { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 
 class UserController {
@@ -214,7 +219,7 @@ class UserController {
 ### Worker Lambda
 
 ```typescript
-import { EventTracking } from 'kx-events-decorators';
+import { EventTracking } from '@toldyaonce/kx-events-decorators';
 
 class NotificationWorker {
   @EventTracking('notification', 'email_sent', {
@@ -232,7 +237,7 @@ class NotificationWorker {
 ### Manual Event Publishing
 
 ```typescript
-import { publishEvent, createTrackedEvent } from 'kx-events-decorators';
+import { publishEvent, createTrackedEvent } from '@toldyaonce/kx-events-decorators';
 
 // In your handler
 const trackedEvent = createTrackedEvent(
@@ -298,7 +303,8 @@ CREATE TABLE events (
 
 #### For Consumer Lambda:
 - `DB_SECRET_ARN` - RDS credentials secret ARN (set by CDK)
-- `AWS_REGION` - AWS region
+
+> **Note**: `AWS_REGION` is automatically provided by Lambda runtime and should not be set manually.
 
 ### Client ID Extraction
 
@@ -342,8 +348,13 @@ The script will:
 2. Install dependencies
 3. Build both packages
 4. Bump patch versions
-5. Publish to npm (if logged in)
+5. Publish to GitHub Packages (if authenticated)
 6. Optionally create git tags
+
+> **Authentication**: The script publishes to GitHub Packages under `@toldyaonce` scope. You'll need to authenticate first:
+> ```bash
+> npm login --scope=@toldyaonce --registry=https://npm.pkg.github.com
+> ```
 
 ## 🏗️ CDK Infrastructure
 
@@ -367,11 +378,40 @@ The CDK package provisions:
 - Max receive count: 3
 
 ### Lambda Consumer
-- Node.js 20.x runtime
+- Node.js 18.x runtime
 - VPC-enabled with RDS access
 - Batch processing (up to 10 messages)
 - Automatic retry and DLQ handling
 - Idempotent inserts with `ON CONFLICT DO NOTHING`
+
+## 🔧 Using CDK Constructs Programmatically
+
+The `EventTrackingStack` exposes public properties for programmatic access:
+
+```typescript
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+
+const stack = new EventTrackingStack(app, 'MyEventStack');
+
+// Access the created resources
+const queueUrl = stack.eventsBus.queue.queueUrl;
+const queueArn = stack.eventsBus.queue.queueArn;
+const consumerFunction = stack.eventsBus.consumerFunction;
+const database = stack.database.instance;
+const databaseSecret = stack.database.secret;
+const vpc = stack.vpc;
+
+// Use in other stacks or for configuration
+const myAppStack = new MyAppStack(app, 'MyApp', {
+  eventsQueueUrl: queueUrl,
+  vpc: stack.vpc,
+});
+```
+
+### Available Public Properties
+- `stack.vpc` - The VPC instance
+- `stack.database` - RdsDatabase construct with `.instance` and `.secret`
+- `stack.eventsBus` - EventsBus construct with `.queue`, `.consumerFunction`, `.deadLetterQueue`
 
 ## 📊 Monitoring
 

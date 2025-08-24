@@ -4,7 +4,7 @@ import { sendMessageToQueue } from './sqsClient';
 
 /**
  * Extracts clientId from request payload or context
- * Priority: headers > body > authorizer context
+ * Priority: headers > query params > body > authorizer context
  */
 export const extractClientId = (event: LambdaEvent, context: LambdaContext): string | null => {
   // Try headers first (case-insensitive)
@@ -15,6 +15,11 @@ export const extractClientId = (event: LambdaEvent, context: LambdaContext): str
     if (clientIdHeader && event.headers[clientIdHeader]) {
       return event.headers[clientIdHeader];
     }
+  }
+
+  // Try query parameters (for GET requests)
+  if ((event as any).queryStringParameters?.clientId) {
+    return (event as any).queryStringParameters.clientId;
   }
 
   // Try body (parsed or string)
@@ -44,7 +49,7 @@ export const extractClientId = (event: LambdaEvent, context: LambdaContext): str
 };
 
 /**
- * Extracts previousEventId from request headers or body
+ * Extracts previousEventId from request headers, query params, or body
  */
 export const extractPreviousEventId = (event: LambdaEvent): string | null => {
   // Try headers first (case-insensitive)
@@ -55,6 +60,11 @@ export const extractPreviousEventId = (event: LambdaEvent): string | null => {
     if (prevEventIdHeader && event.headers[prevEventIdHeader]) {
       return event.headers[prevEventIdHeader];
     }
+  }
+
+  // Try query parameters
+  if ((event as any).queryStringParameters?.previousEventId) {
+    return (event as any).queryStringParameters.previousEventId;
   }
 
   // Try body (parsed or string)

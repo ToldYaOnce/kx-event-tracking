@@ -6,11 +6,15 @@ import { RdsDatabase } from '../src/constructs/RdsDatabase';
 import { EventsBus } from '../src/constructs/EventsBus';
 
 export class EventTrackingStack extends cdk.Stack {
+  public readonly vpc: ec2.Vpc;
+  public readonly database: RdsDatabase;
+  public readonly eventsBus: EventsBus;
+
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
     // Create VPC with public and private subnets
-    const vpc = new ec2.Vpc(this, 'EventTrackingVpc', {
+    this.vpc = new ec2.Vpc(this, 'EventTrackingVpc', {
       maxAzs: 2, // Use 2 AZs for high availability
       natGateways: 1, // Use 1 NAT Gateway to reduce costs
       subnetConfiguration: [
@@ -28,43 +32,43 @@ export class EventTrackingStack extends cdk.Stack {
     });
 
     // Create RDS PostgreSQL database
-    const database = new RdsDatabase(this, 'EventsDatabase', {
-      vpc,
+    this.database = new RdsDatabase(this, 'EventsDatabase', {
+      vpc: this.vpc,
       databaseName: 'events',
       instanceClass: ec2.InstanceType.of(ec2.InstanceClass.T3, ec2.InstanceSize.MICRO),
       allocatedStorage: 20,
     });
 
     // Create SQS queue and consumer Lambda
-    const eventsBus = new EventsBus(this, 'EventsBus', {
-      vpc,
-      databaseSecurityGroup: database.securityGroup,
-      databaseSecret: database.secret,
+    this.eventsBus = new EventsBus(this, 'EventsBus', {
+      vpc: this.vpc,
+      databaseSecurityGroup: this.database.securityGroup,
+      databaseSecret: this.database.secret,
     });
 
     // Stack outputs
     new cdk.CfnOutput(this, 'VpcId', {
-      value: vpc.vpcId,
+      value: this.vpc.vpcId,
       description: 'ID of the VPC',
     });
 
     new cdk.CfnOutput(this, 'DatabaseEndpoint', {
-      value: database.instance.instanceEndpoint.hostname,
+      value: this.database.instance.instanceEndpoint.hostname,
       description: 'RDS PostgreSQL database endpoint',
     });
 
     new cdk.CfnOutput(this, 'DatabaseSecretArn', {
-      value: database.secret.secretArn,
+      value: this.database.secret.secretArn,
       description: 'ARN of the database credentials secret',
     });
 
     new cdk.CfnOutput(this, 'EventsQueueUrl', {
-      value: eventsBus.queue.queueUrl,
+      value: this.eventsBus.queue.queueUrl,
       description: 'URL of the events SQS queue',
     });
 
     new cdk.CfnOutput(this, 'EventsQueueArn', {
-      value: eventsBus.queue.queueArn,
+      value: this.eventsBus.queue.queueArn,
       description: 'ARN of the events SQS queue',
     });
   }

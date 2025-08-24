@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as sources from 'aws-cdk-lib/aws-lambda-event-sources';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -17,7 +18,7 @@ export interface EventsBusProps {
 export class EventsBus extends Construct {
   public readonly queue: sqs.Queue;
   public readonly deadLetterQueue: sqs.Queue;
-  public readonly consumerFunction: lambda.Function;
+  public readonly consumerFunction: NodejsFunction;
 
   constructor(scope: Construct, id: string, props: EventsBusProps) {
     super(scope, id);
@@ -53,11 +54,11 @@ export class EventsBus extends Construct {
       'Allow Lambda to connect to database'
     );
 
-    // Create Lambda function
-    this.consumerFunction = new lambda.Function(this, 'EventsConsumerFunction', {
+    // Create Lambda function using NodejsFunction like in the example
+    this.consumerFunction = new NodejsFunction(this, 'EventsConsumerFunction', {
       runtime: lambda.Runtime.NODEJS_18_X,
-      handler: 'index.handler',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../lambdas/events-consumer')),
+      entry: path.join(__dirname, '../lambdas/events-consumer/index.js'),
+      handler: 'handler',
       timeout: cdk.Duration.minutes(5),
       memorySize: 512,
       vpc: props.vpc,
@@ -67,7 +68,12 @@ export class EventsBus extends Construct {
       securityGroups: [lambdaSecurityGroup],
       environment: {
         DB_SECRET_ARN: props.databaseSecret.secretArn,
-        AWS_REGION: cdk.Stack.of(this).region,
+      },
+      bundling: {
+        nodeModules: ['pg', '@aws-sdk/client-secrets-manager'],
+        externalModules: ['aws-sdk'],
+        minify: false,
+        sourceMap: true,
       },
     });
 

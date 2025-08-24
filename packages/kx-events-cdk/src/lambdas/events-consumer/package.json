@@ -1,0 +1,10 @@
+{
+  "name": "events-consumer-lambda",
+  "version": "1.0.0",
+  "description": "Lambda function to consume events from SQS and store in PostgreSQL",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.0.0",
+    "pg": "^8.11.0"
+  }
+}
