@@ -1,6 +1,6 @@
 {
-  "name": "kx-events-decorators",
-  "version": "1.0.0",
+  "name": "@toldyaonce/kx-events-decorators",
+  "version": "1.0.1",
   "description": "Runtime decorators and helpers for event tracking",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,6 +19,12 @@
   },
   "peerDependencies": {
     "@types/aws-lambda": "^8.10.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/toldyaonce/kx-event-tracking.git"
   }
 }
-

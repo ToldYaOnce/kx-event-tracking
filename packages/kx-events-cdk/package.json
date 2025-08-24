@@ -1,6 +1,6 @@
 {
-  "name": "kx-events-cdk",
-  "version": "1.0.0",
+  "name": "@toldyaonce/kx-events-cdk",
+  "version": "1.0.1",
   "description": "CDK constructs and infrastructure for event tracking system",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -27,6 +27,12 @@
     "@types/aws-lambda": "^8.10.0",
     "typescript": "^5.0.0",
     "aws-cdk": "2.101.1"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/toldyaonce/kx-event-tracking.git"
   }
 }
-

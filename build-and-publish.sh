@@ -43,9 +43,10 @@ if ! command -v pnpm &> /dev/null; then
     exit 1
 fi
 
-# Check if npm is logged in (for publishing)
-if ! npm whoami &> /dev/null; then
-    print_warning "You are not logged in to npm. Please run 'npm login' first if you want to publish."
+# Check if authenticated with GitHub Packages
+if ! npm whoami --registry=https://npm.pkg.github.com &> /dev/null; then
+    print_warning "You are not logged in to GitHub Packages."
+    print_warning "Please run: npm login --scope=@toldyaonce --registry=https://npm.pkg.github.com"
     read -p "Continue without publishing? (y/N): " -n 1 -r
     echo
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -106,11 +107,11 @@ publish_package() {
     cd "$package_dir"
     
     # Check if this version already exists
-    if npm view "$package_name@$version" version &> /dev/null; then
-        print_warning "Version $version of $package_name already exists on npm, skipping publish"
+    if npm view "$package_name@$version" version --registry=https://npm.pkg.github.com &> /dev/null; then
+        print_warning "Version $version of $package_name already exists on GitHub Packages, skipping publish"
     else
-        npm publish --access public
-        print_success "Published $package_name@$version"
+        npm publish --registry=https://npm.pkg.github.com
+        print_success "Published $package_name@$version to GitHub Packages"
     fi
     
     cd - > /dev/null
@@ -144,12 +145,13 @@ echo "  📦 kx-events-cdk: $cdk_version"
 echo
 
 if [ "$SKIP_PUBLISH" = true ]; then
-    print_warning "Packages were built and versioned but not published (npm login required)"
+    print_warning "Packages were built and versioned but not published (GitHub Packages login required)"
     echo "To publish manually:"
-    echo "  cd packages/kx-events-decorators && npm publish --access public"
-    echo "  cd packages/kx-events-cdk && npm publish --access public"
+    echo "  npm login --scope=@toldyaonce --registry=https://npm.pkg.github.com"
+    echo "  cd packages/kx-events-decorators && npm publish --registry=https://npm.pkg.github.com"
+    echo "  cd packages/kx-events-cdk && npm publish --registry=https://npm.pkg.github.com"
 else
-    print_success "All packages have been built, versioned, and published successfully!"
+    print_success "All packages have been built, versioned, and published to GitHub Packages successfully!"
 fi
 
 echo

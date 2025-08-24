@@ -12,19 +12,116 @@ CDK constructs for provisioning AWS infrastructure including VPC, RDS PostgreSQL
 
 ## 🏗️ Architecture
 
+### High-Level Data Flow
+```mermaid
+graph TD
+    A["🚀 Lambda Function<br/>@EventTracking Decorator"] --> B["📬 SQS Standard Queue<br/>events-queue"]
+    B --> C["⚡ Consumer Lambda<br/>Node.js 20.x"]
+    C --> D["🗄️ PostgreSQL RDS<br/>events table"]
+    B --> E["💀 Dead Letter Queue<br/>Failed messages"]
+    
+    style A fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
+    style B fill:#ff4b4b,stroke:#232f3e,stroke-width:2px,color:#fff
+    style C fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
+    style D fill:#336791,stroke:#232f3e,stroke-width:2px,color:#fff
+    style E fill:#8b0000,stroke:#232f3e,stroke-width:2px,color:#fff
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Lambda with   │    │   SQS Queue     │    │  Consumer       │
-│  @EventTracking │───▶│   (Standard)    │───▶│  Lambda         │
-│   Decorator     │    │                 │    │                 │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                                       │
-                                                       ▼
-                                              ┌─────────────────┐
-                                              │  PostgreSQL     │
-                                              │  RDS Instance   │
-                                              │  (with schema)  │
-                                              └─────────────────┘
+
+### AWS Infrastructure Overview
+```mermaid
+graph TB
+    subgraph "🌐 VPC (Multi-AZ)"
+        subgraph "🔓 Public Subnets"
+            NAT["🌍 NAT Gateway"]
+        end
+        
+        subgraph "🔒 Private Subnets"
+            LAMBDA["⚡ Consumer Lambda<br/>📦 VPC Enabled<br/>🔐 Security Groups"]
+            RDS["🗄️ RDS PostgreSQL 16<br/>🔐 Private Access Only<br/>🗝️ Secrets Manager"]
+        end
+    end
+    
+    subgraph "☁️ AWS Managed Services"
+        SQS["📬 SQS Queue + DLQ<br/>🔄 Batch Processing<br/>⏱️ 5min Visibility"]
+        SECRETS["🗝️ Secrets Manager<br/>🔐 DB Credentials<br/>🔄 Auto Rotation"]
+        CW["📊 CloudWatch<br/>📈 Metrics & Logs<br/>🚨 Alarms"]
+    end
+    
+    USER["👤 Your Lambda Functions<br/>@EventTracking"] --> SQS
+    SQS --> LAMBDA
+    LAMBDA --> RDS
+    LAMBDA --> SECRETS
+    LAMBDA --> CW
+    RDS --> SECRETS
+    
+    style USER fill:#4CAF50,stroke:#232f3e,stroke-width:3px,color:#fff
+    style SQS fill:#ff4b4b,stroke:#232f3e,stroke-width:2px,color:#fff
+    style LAMBDA fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
+    style RDS fill:#336791,stroke:#232f3e,stroke-width:2px,color:#fff
+    style SECRETS fill:#dd344c,stroke:#232f3e,stroke-width:2px,color:#fff
+    style CW fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
+    style NAT fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
+```
+
+### Event Processing Flow
+```mermaid
+sequenceDiagram
+    participant App as 🚀 Your Lambda
+    participant Dec as 🎯 @EventTracking
+    participant SQS as 📬 SQS Queue
+    participant Con as ⚡ Consumer
+    participant DB as 🗄️ PostgreSQL
+    participant DLQ as 💀 Dead Letter Queue
+
+    App->>Dec: Execute handler
+    Dec->>App: ✅ Handler succeeds
+    Dec->>Dec: 🔍 Extract clientId
+    Dec->>Dec: 🆔 Generate eventId
+    Dec->>SQS: 📤 Publish TrackedEvent
+    Note over Dec,SQS: Fire-and-forget<br/>Logs errors, never throws
+    
+    SQS->>Con: 📥 Batch delivery (1-10 msgs)
+    Con->>Con: ✅ Validate event schema
+    Con->>DB: 🔍 ON CONFLICT DO NOTHING
+    Con->>DB: 💾 INSERT event
+    
+    alt Processing Fails
+        Con->>SQS: ❌ Message not deleted
+        SQS->>SQS: 🔄 Retry (max 3 times)
+        SQS->>DLQ: 💀 Send to DLQ
+    end
+```
+
+### Security & IAM Flow
+```mermaid
+graph LR
+    subgraph "🔐 IAM Roles & Policies"
+        LR["⚡ Lambda Execution Role<br/>🔹 VPC Access<br/>🔹 CloudWatch Logs<br/>🔹 SQS Consume<br/>🔹 Secrets Read"]
+        CR["⚡ Consumer Role<br/>🔹 VPC Access<br/>🔹 RDS Connect<br/>🔹 Secrets Manager<br/>🔹 CloudWatch"]
+    end
+    
+    subgraph "🛡️ Security Groups"
+        LSG["🔒 Lambda SG<br/>Outbound: 443, 5432<br/>Inbound: None"]
+        RSG["🔒 RDS SG<br/>Inbound: 5432 from Lambda<br/>Outbound: None"]
+    end
+    
+    subgraph "🗝️ Secrets & Encryption"
+        SM["🔐 Secrets Manager<br/>🔄 Auto-rotation<br/>🔒 KMS Encrypted"]
+        KMS["🔑 KMS Keys<br/>🔐 RDS Encryption<br/>🔐 SQS Encryption"]
+    end
+    
+    LR --> LSG
+    CR --> LSG
+    LSG --> RSG
+    CR --> SM
+    SM --> KMS
+    
+    style LR fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
+    style CR fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
+    style LSG fill:#dd344c,stroke:#232f3e,stroke-width:2px,color:#fff
+    style RSG fill:#dd344c,stroke:#232f3e,stroke-width:2px,color:#fff
+    style SM fill:#dd344c,stroke:#232f3e,stroke-width:2px,color:#fff
+    style KMS fill:#dd344c,stroke:#232f3e,stroke-width:2px,color:#fff
 ```
 
 ## 🚀 Quick Start
