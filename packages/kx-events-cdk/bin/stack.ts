@@ -5,10 +5,12 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import { RdsDatabase } from '../src/constructs/RdsDatabase';
 import { EventsBus } from '../src/constructs/EventsBus';
 
+
 export class EventTrackingStack extends cdk.Stack {
   public readonly vpc: ec2.Vpc;
   public readonly database: RdsDatabase;
   public readonly eventsBus: EventsBus;
+
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
@@ -46,6 +48,8 @@ export class EventTrackingStack extends cdk.Stack {
       databaseSecret: this.database.secret,
     });
 
+
+
     // Stack outputs
     new cdk.CfnOutput(this, 'VpcId', {
       value: this.vpc.vpcId,
@@ -71,6 +75,8 @@ export class EventTrackingStack extends cdk.Stack {
       value: this.eventsBus.queue.queueArn,
       description: 'ARN of the events SQS queue',
     });
+
+
   }
 }
 
@@ -82,4 +88,3 @@ new EventTrackingStack(app, 'EventTrackingStack', {
     region: process.env.CDK_DEFAULT_REGION,
   },
 });
-

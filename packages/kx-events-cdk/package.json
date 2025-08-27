@@ -1,6 +1,6 @@
 {
   "name": "@toldyaonce/kx-events-cdk",
-  "version": "1.0.7",
+  "version": "1.0.10",
   "description": "CDK constructs and infrastructure for event tracking system",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,13 +12,13 @@
     "src/lambdas/**/*"
   ],
   "scripts": {
-    "build": "npm run prepare-lambda && tsc",
+    "build": "npm run prepare-consumer && tsc",
     "clean": "rm -rf dist",
     "test": "echo \"No tests yet\"",
     "cdk": "cdk",
     "deploy": "cdk deploy",
     "synth": "cdk synth",
-    "prepare-lambda": "cd src/lambdas/events-consumer && npm install --production && npx tsc index.ts db.ts --target es2020 --module commonjs --esModuleInterop --skipLibCheck"
+    "prepare-consumer": "cd src/lambdas/events-consumer && npm install --production && npx tsc index.ts db.ts --target es2020 --module commonjs --esModuleInterop --skipLibCheck"
   },
   "dependencies": {
     "aws-cdk-lib": "2.101.1",

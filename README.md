@@ -8,7 +8,7 @@ A dual-package TypeScript monorepo for event tracking with AWS CDK infrastructur
 Runtime decorators and helpers for event tracking in Lambda functions.
 
 ### `kx-events-cdk`
-CDK constructs for provisioning AWS infrastructure including VPC, RDS PostgreSQL, SQS, and consumer Lambda.
+CDK constructs for provisioning AWS infrastructure including VPC, RDS PostgreSQL, SQS, and consumer Lambda. **Note: This package provides the database infrastructure only - no API Gateway or query endpoints are included by design.**
 
 ## 🏗️ Architecture
 
@@ -16,7 +16,7 @@ CDK constructs for provisioning AWS infrastructure including VPC, RDS PostgreSQL
 ```mermaid
 graph TD
     A["🚀 Lambda Function<br/>@EventTracking Decorator"] --> B["📬 SQS Standard Queue<br/>events-queue"]
-    B --> C["⚡ Consumer Lambda<br/>Node.js 20.x"]
+    B --> C["⚡ Consumer Lambda<br/>Node.js 18.x"]
     C --> D["🗄️ PostgreSQL RDS<br/>events table"]
     B --> E["💀 Dead Letter Queue<br/>Failed messages"]
     
@@ -37,7 +37,7 @@ graph TB
         
         subgraph "🔒 Private Subnets"
             LAMBDA["⚡ Consumer Lambda<br/>📦 VPC Enabled<br/>🔐 Security Groups"]
-            RDS["🗄️ RDS PostgreSQL 16<br/>🔐 Private Access Only<br/>🗝️ Secrets Manager"]
+            RDS["🗄️ RDS PostgreSQL 15<br/>🔐 Private Access Only<br/>🗝️ Secrets Manager"]
         end
     end
     
@@ -47,12 +47,21 @@ graph TB
         CW["📊 CloudWatch<br/>📈 Metrics & Logs<br/>🚨 Alarms"]
     end
     
+    subgraph "🔧 Your Custom API (Optional)"
+        API["🌐 API Gateway<br/>🔐 Your Security Rules"]
+        QUERY["⚡ Query Lambda<br/>📊 Custom Endpoints"]
+    end
+    
     USER["👤 Your Lambda Functions<br/>@EventTracking"] --> SQS
     SQS --> LAMBDA
     LAMBDA --> RDS
     LAMBDA --> SECRETS
     LAMBDA --> CW
     RDS --> SECRETS
+    
+    API --> QUERY
+    QUERY --> RDS
+    QUERY --> SECRETS
     
     style USER fill:#4CAF50,stroke:#232f3e,stroke-width:3px,color:#fff
     style SQS fill:#ff4b4b,stroke:#232f3e,stroke-width:2px,color:#fff
@@ -413,6 +422,8 @@ const myAppStack = new MyAppStack(app, 'MyApp', {
 - `stack.database` - RdsDatabase construct with `.instance` and `.secret`
 - `stack.eventsBus` - EventsBus construct with `.queue`, `.consumerFunction`, `.deadLetterQueue`
 
+**Note:** The EventTrackingStack no longer includes an API Gateway or query endpoints. Use the patterns shown above to create your own API layer.
+
 ## 📊 Monitoring
 
 ### CloudWatch Metrics
@@ -472,6 +483,1130 @@ The examples in the `examples/` directory can be used for integration testing:
 2. Set the `EVENTS_QUEUE_URL` environment variable
 3. Run the example handlers
 4. Check the database for inserted events
+
+## 🔍 Querying Events Database
+
+The CDK package provisions a PostgreSQL database with your events, but doesn't include query endpoints by design. This gives you full control over your API security, authentication, and business logic. Below are complete Lambda function examples you can copy/paste into your consumer applications.
+
+### Database Connection Helper
+
+First, create a database connection helper that your query Lambdas can use:
+
+```typescript
+// db.ts
+import { Client } from 'pg';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+
+interface DatabaseCredentials {
+  username: string;
+  password: string;
+  engine: string;
+  host: string;
+  port: number;
+  dbname: string;
+}
+
+interface TrackedEvent {
+  eventId: string;
+  clientId: string;
+  previousEventId: string | null;
+  userId?: string;
+  entityId?: string;
+  entityType: string;
+  eventType: string;
+  source?: string;
+  campaignId?: string;
+  pointsAwarded?: number;
+  sessionId?: string;
+  occurredAt: string;
+  metadata?: Record<string, any>;
+  createdAt: string;
+}
+
+interface QueryOptions {
+  clientId?: string;
+  userId?: string;
+  entityType?: string;
+  eventType?: string;
+  campaignId?: string;
+  sessionId?: string;
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+  offset?: number;
+}
+
+let dbClient: Client | null = null;
+let credentials: DatabaseCredentials | null = null;
+
+const secretsClient = new SecretsManagerClient({
+  region: process.env.AWS_REGION || 'us-east-1',
+});
+
+/**
+ * Retrieves database credentials from AWS Secrets Manager
+ */
+async function getDbCredentials(): Promise<DatabaseCredentials> {
+  if (credentials) {
+    return credentials;
+  }
+
+  const secretArn = process.env.DB_SECRET_ARN;
+  if (!secretArn) {
+    throw new Error('DB_SECRET_ARN environment variable is required');
+  }
+
+  try {
+    const command = new GetSecretValueCommand({
+      SecretId: secretArn,
+    });
+    
+    const response = await secretsClient.send(command);
+    if (!response.SecretString) {
+      throw new Error('Secret value is empty');
+    }
+
+    credentials = JSON.parse(response.SecretString);
+    return credentials!;
+  } catch (error) {
+    console.error('Failed to retrieve database credentials:', error);
+    throw error;
+  }
+}
+
+/**
+ * Creates a new database connection
+ */
+async function createDbConnection(): Promise<Client> {
+  const creds = await getDbCredentials();
+  
+  const client = new Client({
+    host: creds.host,
+    port: creds.port,
+    database: creds.dbname,
+    user: creds.username,
+    password: creds.password,
+    ssl: {
+      rejectUnauthorized: false,
+    },
+  });
+
+  await client.connect();
+  return client;
+}
+
+/**
+ * Gets or creates a database connection
+ */
+export async function getDbConnection(): Promise<Client> {
+  if (!dbClient) {
+    dbClient = await createDbConnection();
+  }
+  return dbClient;
+}
+
+/**
+ * Closes the database connection
+ */
+export async function closeDbConnection(): Promise<void> {
+  if (dbClient) {
+    await dbClient.end();
+    dbClient = null;
+  }
+}
+
+/**
+ * Query events with various filters
+ */
+export async function queryEvents(options: QueryOptions = {}): Promise<TrackedEvent[]> {
+  const client = await getDbConnection();
+  
+  let query = \`
+    SELECT 
+      event_id as "eventId",
+      client_id as "clientId", 
+      previous_event_id as "previousEventId",
+      user_id as "userId",
+      entity_id as "entityId",
+      entity_type as "entityType",
+      event_type as "eventType",
+      source,
+      campaign_id as "campaignId",
+      points_awarded as "pointsAwarded",
+      session_id as "sessionId",
+      occurred_at as "occurredAt",
+      metadata,
+      created_at as "createdAt"
+    FROM events 
+    WHERE 1=1
+  \`;
+  
+  const params: any[] = [];
+  let paramIndex = 1;
+
+  // Add filters
+  if (options.clientId) {
+    query += \` AND client_id = $\${paramIndex++}\`;
+    params.push(options.clientId);
+  }
+  
+  if (options.userId) {
+    query += \` AND user_id = $\${paramIndex++}\`;
+    params.push(options.userId);
+  }
+  
+  if (options.entityType) {
+    query += \` AND entity_type = $\${paramIndex++}\`;
+    params.push(options.entityType);
+  }
+  
+  if (options.eventType) {
+    query += \` AND event_type = $\${paramIndex++}\`;
+    params.push(options.eventType);
+  }
+  
+  if (options.campaignId) {
+    query += \` AND campaign_id = $\${paramIndex++}\`;
+    params.push(options.campaignId);
+  }
+  
+  if (options.sessionId) {
+    query += \` AND session_id = $\${paramIndex++}\`;
+    params.push(options.sessionId);
+  }
+  
+  if (options.startDate) {
+    query += \` AND occurred_at >= $\${paramIndex++}\`;
+    params.push(options.startDate);
+  }
+  
+  if (options.endDate) {
+    query += \` AND occurred_at <= $\${paramIndex++}\`;
+    params.push(options.endDate);
+  }
+
+  // Order by most recent first
+  query += \` ORDER BY occurred_at DESC\`;
+  
+  // Add pagination
+  if (options.limit) {
+    query += \` LIMIT $\${paramIndex++}\`;
+    params.push(options.limit);
+  }
+  
+  if (options.offset) {
+    query += \` OFFSET $\${paramIndex++}\`;
+    params.push(options.offset);
+  }
+
+  try {
+    const result = await client.query(query, params);
+    return result.rows.map(row => ({
+      ...row,
+      metadata: row.metadata || undefined,
+    }));
+  } catch (error) {
+    console.error('Failed to query events:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get event chain starting from a specific event
+ */
+export async function getEventChain(eventId: string): Promise<TrackedEvent[]> {
+  const client = await getDbConnection();
+  
+  const query = \`
+    WITH RECURSIVE event_chain AS (
+      -- Start with the specified event
+      SELECT 
+        event_id, client_id, previous_event_id, user_id, entity_id, entity_type,
+        event_type, source, campaign_id, points_awarded, session_id, 
+        occurred_at, metadata, created_at, 1 as level
+      FROM events 
+      WHERE event_id = $1
+      
+      UNION ALL
+      
+      -- Follow the chain forward
+      SELECT 
+        e.event_id, e.client_id, e.previous_event_id, e.user_id, e.entity_id, e.entity_type,
+        e.event_type, e.source, e.campaign_id, e.points_awarded, e.session_id,
+        e.occurred_at, e.metadata, e.created_at, ec.level + 1
+      FROM events e
+      JOIN event_chain ec ON e.previous_event_id = ec.event_id
+    )
+    SELECT 
+      event_id as "eventId",
+      client_id as "clientId", 
+      previous_event_id as "previousEventId",
+      user_id as "userId",
+      entity_id as "entityId",
+      entity_type as "entityType",
+      event_type as "eventType",
+      source,
+      campaign_id as "campaignId",
+      points_awarded as "pointsAwarded",
+      session_id as "sessionId",
+      occurred_at as "occurredAt",
+      metadata,
+      created_at as "createdAt",
+      level
+    FROM event_chain 
+    ORDER BY level, occurred_at
+  \`;
+
+  try {
+    const result = await client.query(query, [eventId]);
+    return result.rows.map(row => ({
+      ...row,
+      metadata: row.metadata || undefined,
+    }));
+  } catch (error) {
+    console.error('Failed to get event chain:', error);
+    throw error;
+  }
+}
+
+/**
+ * Get analytics data
+ */
+export async function getAnalytics(clientId?: string): Promise<any> {
+  const client = await getDbConnection();
+  
+  const queries = {
+    totalEvents: \`
+      SELECT COUNT(*) as count 
+      FROM events 
+      \${clientId ? 'WHERE client_id = $1' : ''}
+    \`,
+    eventsByType: \`
+      SELECT entity_type, event_type, COUNT(*) as count
+      FROM events 
+      \${clientId ? 'WHERE client_id = $1' : ''}
+      GROUP BY entity_type, event_type 
+      ORDER BY count DESC
+    \`,
+    totalPoints: \`
+      SELECT COALESCE(SUM(points_awarded), 0) as total_points
+      FROM events 
+      WHERE points_awarded IS NOT NULL
+      \${clientId ? 'AND client_id = $1' : ''}
+    \`,
+    eventsPerDay: \`
+      SELECT DATE(occurred_at) as date, COUNT(*) as count
+      FROM events 
+      \${clientId ? 'WHERE client_id = $1' : ''}
+      GROUP BY DATE(occurred_at) 
+      ORDER BY date DESC 
+      LIMIT 30
+    \`,
+  };
+
+  const params = clientId ? [clientId] : [];
+
+  try {
+    const [totalEvents, eventsByType, totalPoints, eventsPerDay] = await Promise.all([
+      client.query(queries.totalEvents, params),
+      client.query(queries.eventsByType, params),
+      client.query(queries.totalPoints, params),
+      client.query(queries.eventsPerDay, params),
+    ]);
+
+    return {
+      totalEvents: parseInt(totalEvents.rows[0].count),
+      eventsByType: eventsByType.rows,
+      totalPoints: parseInt(totalPoints.rows[0].total_points),
+      eventsPerDay: eventsPerDay.rows,
+    };
+  } catch (error) {
+    console.error('Failed to get analytics:', error);
+    throw error;
+  }
+}
+```
+
+### Query Lambda Handler
+
+Here's a complete Lambda handler that provides multiple query endpoints:
+
+```typescript
+// index.ts
+import { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
+import { queryEvents, getEventChain, getAnalytics, closeDbConnection } from './db';
+
+/**
+ * CORS headers for API responses
+ */
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token',
+  'Access-Control-Allow-Methods': 'GET,OPTIONS',
+  'Content-Type': 'application/json',
+};
+
+/**
+ * Create API response
+ */
+function createResponse(statusCode: number, body: any): APIGatewayProxyResult {
+  return {
+    statusCode,
+    headers: corsHeaders,
+    body: JSON.stringify(body),
+  };
+}
+
+/**
+ * Handle CORS preflight requests
+ */
+function handleCors(): APIGatewayProxyResult {
+  return {
+    statusCode: 200,
+    headers: corsHeaders,
+    body: '',
+  };
+}
+
+/**
+ * Parse query parameters with defaults
+ */
+function parseQueryParams(event: APIGatewayProxyEvent) {
+  const params = event.queryStringParameters || {};
+  
+  return {
+    clientId: params.clientId,
+    userId: params.userId,
+    entityType: params.entityType,
+    eventType: params.eventType,
+    campaignId: params.campaignId,
+    sessionId: params.sessionId,
+    startDate: params.startDate,
+    endDate: params.endDate,
+    limit: params.limit ? parseInt(params.limit) : 50,
+    offset: params.offset ? parseInt(params.offset) : 0,
+  };
+}
+
+/**
+ * GET /events - Query events with filters
+ * 
+ * Query parameters:
+ * - clientId: Filter by client ID
+ * - userId: Filter by user ID
+ * - entityType: Filter by entity type
+ * - eventType: Filter by event type
+ * - campaignId: Filter by campaign ID
+ * - sessionId: Filter by session ID
+ * - startDate: Filter events after this date (ISO string)
+ * - endDate: Filter events before this date (ISO string)
+ * - limit: Number of events to return (default: 50)
+ * - offset: Number of events to skip (default: 0)
+ */
+export const getEvents = async (
+  event: APIGatewayProxyEvent,
+  context: Context
+): Promise<APIGatewayProxyResult> => {
+  if (event.httpMethod === 'OPTIONS') {
+    return handleCors();
+  }
+
+  try {
+    const queryOptions = parseQueryParams(event);
+    
+    console.log('Querying events with options:', queryOptions);
+    
+    const events = await queryEvents(queryOptions);
+    
+    return createResponse(200, {
+      success: true,
+      data: events,
+      count: events.length,
+      pagination: {
+        limit: queryOptions.limit,
+        offset: queryOptions.offset,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to get events:', error);
+    
+    return createResponse(500, {
+      success: false,
+      error: 'Failed to retrieve events',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  } finally {
+    await closeDbConnection();
+  }
+};
+
+/**
+ * GET /events/chain/{eventId} - Get event chain starting from specific event
+ */
+export const getChain = async (
+  event: APIGatewayProxyEvent,
+  context: Context
+): Promise<APIGatewayProxyResult> => {
+  if (event.httpMethod === 'OPTIONS') {
+    return handleCors();
+  }
+
+  try {
+    const eventId = event.pathParameters?.eventId;
+    
+    if (!eventId) {
+      return createResponse(400, {
+        success: false,
+        error: 'Event ID is required',
+      });
+    }
+    
+    console.log('Getting event chain for:', eventId);
+    
+    const chain = await getEventChain(eventId);
+    
+    return createResponse(200, {
+      success: true,
+      data: chain,
+      count: chain.length,
+    });
+  } catch (error) {
+    console.error('Failed to get event chain:', error);
+    
+    return createResponse(500, {
+      success: false,
+      error: 'Failed to retrieve event chain',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  } finally {
+    await closeDbConnection();
+  }
+};
+
+/**
+ * GET /analytics - Get analytics data
+ * 
+ * Query parameters:
+ * - clientId: Get analytics for specific client (optional)
+ */
+export const analytics = async (
+  event: APIGatewayProxyEvent,
+  context: Context
+): Promise<APIGatewayProxyResult> => {
+  if (event.httpMethod === 'OPTIONS') {
+    return handleCors();
+  }
+
+  try {
+    const clientId = event.queryStringParameters?.clientId;
+    
+    console.log('Getting analytics for client:', clientId || 'all clients');
+    
+    const analyticsData = await getAnalytics(clientId);
+    
+    return createResponse(200, {
+      success: true,
+      data: analyticsData,
+      clientId: clientId || null,
+    });
+  } catch (error) {
+    console.error('Failed to get analytics:', error);
+    
+    return createResponse(500, {
+      success: false,
+      error: 'Failed to retrieve analytics',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  } finally {
+    await closeDbConnection();
+  }
+};
+
+/**
+ * Main Lambda handler - routes requests based on path
+ */
+export const handler = async (
+  event: APIGatewayProxyEvent,
+  context: Context
+): Promise<APIGatewayProxyResult> => {
+  console.log('Event:', JSON.stringify(event, null, 2));
+  
+  const path = event.path;
+  const method = event.httpMethod;
+  
+  try {
+    // Route requests
+    if (path === '/events' && method === 'GET') {
+      return await getEvents(event, context);
+    }
+    
+    if (path.startsWith('/events/chain/') && method === 'GET') {
+      return await getChain(event, context);
+    }
+    
+    if (path === '/analytics' && method === 'GET') {
+      return await analytics(event, context);
+    }
+    
+    if (method === 'OPTIONS') {
+      return handleCors();
+    }
+    
+    // 404 for unknown paths
+    return createResponse(404, {
+      success: false,
+      error: 'Not found',
+      message: \`Path \${path} not found\`,
+    });
+    
+  } catch (error) {
+    console.error('Unhandled error:', error);
+    
+    return createResponse(500, {
+      success: false,
+      error: 'Internal server error',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+};
+```
+
+### CDK Integration Example
+
+Here's how to create your own query Lambda using CDK and attach it to your API Gateway:
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+
+// Get reference to the event tracking stack
+const eventStack = new EventTrackingStack(this, 'EventTracking');
+
+// Create your query Lambda
+const queryFunction = new NodejsFunction(this, 'EventsQueryFunction', {
+  runtime: lambda.Runtime.NODEJS_18_X,
+  entry: './src/lambdas/query/index.ts', // Your Lambda code
+  handler: 'handler',
+  timeout: cdk.Duration.seconds(30),
+  memorySize: 512,
+  vpc: eventStack.vpc,
+  vpcSubnets: {
+    subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+  },
+  environment: {
+    DB_SECRET_ARN: eventStack.database.secret.secretArn,
+  },
+});
+
+// Grant permissions
+eventStack.database.secret.grantRead(queryFunction);
+eventStack.database.securityGroup.addIngressRule(
+  queryFunction.connections.securityGroups[0],
+  ec2.Port.tcp(5432),
+  'Allow query Lambda to connect to database'
+);
+
+// Add to your existing API Gateway
+const api = new apigateway.RestApi(this, 'MyApi', {
+  // Your API configuration
+});
+
+const lambdaIntegration = new apigateway.LambdaIntegration(queryFunction);
+
+// Add routes
+const eventsResource = api.root.addResource('events');
+eventsResource.addMethod('GET', lambdaIntegration);
+
+const chainResource = eventsResource.addResource('chain');
+chainResource.addResource('{eventId}').addMethod('GET', lambdaIntegration);
+
+const analyticsResource = api.root.addResource('analytics');
+analyticsResource.addMethod('GET', lambdaIntegration);
+```
+
+### Package Dependencies
+
+For your query Lambda, you'll need these dependencies:
+
+```json
+{
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.0.0",
+    "pg": "^8.11.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.10.0",
+    "@types/aws-lambda": "^8.10.0"
+  }
+}
+```
+
+### Environment Variables
+
+Your query Lambda needs these environment variables:
+- `DB_SECRET_ARN` - ARN of the database credentials secret (from CDK stack output)
+- `AWS_REGION` - Automatically provided by Lambda runtime
+
+### API Endpoints
+
+Once deployed, your Lambda will handle these routes:
+
+- `GET /events` - Query events with filters
+  - Query params: `clientId`, `userId`, `entityType`, `eventType`, `campaignId`, `sessionId`, `startDate`, `endDate`, `limit`, `offset`
+- `GET /events/chain/{eventId}` - Get event chain starting from specific event
+- `GET /analytics` - Get analytics data
+  - Query params: `clientId` (optional)
+
+### Example API Calls
+
+```bash
+# Get all events for a client
+curl "https://your-api.com/events?clientId=abc123&limit=10"
+
+# Get events by type
+curl "https://your-api.com/events?entityType=user&eventType=login"
+
+# Get event chain
+curl "https://your-api.com/events/chain/550e8400-e29b-41d4-a716-446655440000"
+
+# Get analytics
+curl "https://your-api.com/analytics?clientId=abc123"
+```
+
+## 🚀 REST API with RDS Service Pattern
+
+For a more structured approach to building REST APIs on top of your events database, you can use the `RDSService` pattern from `@toldyaonce/kx-cdk-lambda-utils`. This provides automatic CRUD operations with minimal code.
+
+### Installation
+
+```bash
+npm install @toldyaonce/kx-cdk-lambda-utils
+```
+
+### Define Your Event Model
+
+```typescript
+// src/models/TrackedEvent.ts
+export interface TrackedEvent {
+  eventId: string;
+  clientId: string;
+  previousEventId?: string;
+  userId?: string;
+  entityId?: string;
+  entityType: string;
+  eventType: string;
+  source?: string;
+  campaignId?: string;
+  pointsAwarded?: number;
+  sessionId?: string;
+  occurredAt: string;
+  metadata?: Record<string, any>;
+  createdAt?: string;
+}
+```
+
+### Create RDS Service
+
+```typescript
+// src/services/EventsService.ts
+import { RDSService } from '@toldyaonce/kx-cdk-lambda-utils/wrappers/rest-rds-service';
+import { ApiBasePath, ApiMethod } from '@toldyaonce/kx-cdk-lambda-utils/wrappers/rest';
+import { TrackedEvent } from '../models/TrackedEvent';
+
+@ApiBasePath('/events')
+export class EventsService extends RDSService<TrackedEvent> {
+  constructor() {
+    // Use the database secret from your EventTrackingStack
+    super(
+      TrackedEvent, 
+      'event_id', // Primary key column name
+      process.env.DB_SECRET_ARN! // Secret ARN from CDK stack output
+    );
+  }
+
+  // Override default methods or add custom ones
+  @ApiMethod('GET')
+  async get(event: any) {
+    // Custom query logic for events
+    const { clientId, entityType, eventType, startDate, endDate } = event.queryStringParameters || {};
+    
+    if (clientId || entityType || eventType || startDate || endDate) {
+      // Use custom filtering
+      return this.customQuery(event);
+    }
+    
+    // Use default get behavior
+    return super.get(event);
+  }
+
+  @ApiMethod('POST')
+  async post(event: any) {
+    // Add automatic timestamps
+    const body = JSON.parse(event.body);
+    body.created_at = new Date().toISOString();
+    body.occurred_at = body.occurred_at || new Date().toISOString();
+    
+    // Generate event ID if not provided
+    if (!body.event_id) {
+      body.event_id = crypto.randomUUID();
+    }
+    
+    event.body = JSON.stringify(body);
+    return super.post(event);
+  }
+
+  private async customQuery(event: any) {
+    const params = event.queryStringParameters || {};
+    
+    let query = 'SELECT * FROM events WHERE 1=1';
+    const values: any[] = [];
+    let paramIndex = 1;
+
+    if (params.clientId) {
+      query += ` AND client_id = $${paramIndex++}`;
+      values.push(params.clientId);
+    }
+
+    if (params.entityType) {
+      query += ` AND entity_type = $${paramIndex++}`;
+      values.push(params.entityType);
+    }
+
+    if (params.eventType) {
+      query += ` AND event_type = $${paramIndex++}`;
+      values.push(params.eventType);
+    }
+
+    if (params.startDate) {
+      query += ` AND occurred_at >= $${paramIndex++}`;
+      values.push(params.startDate);
+    }
+
+    if (params.endDate) {
+      query += ` AND occurred_at <= $${paramIndex++}`;
+      values.push(params.endDate);
+    }
+
+    query += ' ORDER BY occurred_at DESC';
+
+    if (params.limit) {
+      query += ` LIMIT $${paramIndex++}`;
+      values.push(parseInt(params.limit));
+    }
+
+    try {
+      const result = await this.executeQuery(query, values);
+      return {
+        statusCode: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          success: true,
+          data: result.rows,
+          count: result.rows.length
+        })
+      };
+    } catch (error) {
+      return {
+        statusCode: 500,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          success: false,
+          error: 'Query failed',
+          message: error instanceof Error ? error.message : 'Unknown error'
+        })
+      };
+    }
+  }
+}
+```
+
+### Create Lambda Handler
+
+```typescript
+// src/handlers/events.ts
+import { getApiMethodHandlers } from '@toldyaonce/kx-cdk-lambda-utils/wrappers/rest-service';
+import { EventsService } from '../services/EventsService';
+
+export const handler = async (event: any) => {
+  const service = new EventsService();
+  const handlers = getApiMethodHandlers(service);
+  
+  // Route to appropriate method based on HTTP method
+  const httpMethod = event.httpMethod.toLowerCase();
+  if (handlers[httpMethod]) {
+    return await handlers[httpMethod](event);
+  }
+  
+  return {
+    statusCode: 405,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ error: 'Method not allowed' })
+  };
+};
+```
+
+### CDK Integration
+
+```typescript
+// src/stacks/ApiStack.ts
+import * as cdk from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+
+export class EventsApiStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, eventStack: EventTrackingStack, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Create Lambda function for events API
+    const eventsFunction = new NodejsFunction(this, 'EventsFunction', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      entry: './src/handlers/events.ts',
+      handler: 'handler',
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 512,
+      vpc: eventStack.vpc,
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
+      },
+      environment: {
+        DB_SECRET_ARN: eventStack.database.secret.secretArn,
+      },
+    });
+
+    // Grant permissions
+    eventStack.database.secret.grantRead(eventsFunction);
+    eventStack.database.securityGroup.addIngressRule(
+      eventsFunction.connections.securityGroups[0],
+      ec2.Port.tcp(5432),
+      'Allow events API to connect to database'
+    );
+
+    // Create API Gateway
+    const api = new apigateway.RestApi(this, 'EventsApi', {
+      restApiName: 'Events API',
+      description: 'REST API for querying and managing events',
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowMethods: apigateway.Cors.ALL_METHODS,
+        allowHeaders: [
+          'Content-Type',
+          'X-Amz-Date',
+          'Authorization',
+          'X-Api-Key',
+          'X-Amz-Security-Token',
+        ],
+      },
+    });
+
+    // Add Lambda integration
+    const lambdaIntegration = new apigateway.LambdaIntegration(eventsFunction);
+
+    // Add routes
+    const eventsResource = api.root.addResource('events');
+    eventsResource.addMethod('GET', lambdaIntegration);    // Query events
+    eventsResource.addMethod('POST', lambdaIntegration);   // Create event
+    eventsResource.addMethod('PATCH', lambdaIntegration);  // Update event
+    eventsResource.addMethod('DELETE', lambdaIntegration); // Delete event
+
+    // Output API URL
+    new cdk.CfnOutput(this, 'EventsApiUrl', {
+      value: api.url,
+      description: 'Events API Gateway URL',
+    });
+  }
+}
+```
+
+### Deploy Both Stacks
+
+```typescript
+// bin/app.ts
+import * as cdk from 'aws-cdk-lib';
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+import { EventsApiStack } from '../src/stacks/ApiStack';
+
+const app = new cdk.App();
+
+// Deploy event tracking infrastructure first
+const eventStack = new EventTrackingStack(app, 'EventTrackingStack', {
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION,
+  },
+});
+
+// Deploy API stack that uses the event tracking infrastructure
+const apiStack = new EventsApiStack(app, 'EventsApiStack', eventStack, {
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION,
+  },
+});
+
+// Ensure API stack depends on event stack
+apiStack.addDependency(eventStack);
+```
+
+### API Usage Examples
+
+The RDS service automatically provides these endpoints:
+
+**Query Events:**
+```bash
+# Get all events
+GET /events
+
+# Filter by client
+GET /events?clientId=abc123
+
+# Filter by type and date range
+GET /events?entityType=user&eventType=login&startDate=2024-01-01&endDate=2024-01-31
+
+# Pagination
+GET /events?limit=50&offset=100
+
+# Select specific fields
+GET /events?qkeys=event_id,client_id,event_type,occurred_at
+```
+
+**Create Event:**
+```bash
+POST /events
+Content-Type: application/json
+
+{
+  "clientId": "abc123",
+  "entityType": "user",
+  "eventType": "login",
+  "userId": "user456",
+  "sessionId": "session789",
+  "metadata": {
+    "ip": "192.168.1.1",
+    "userAgent": "Mozilla/5.0..."
+  }
+}
+```
+
+**Update Event:**
+```bash
+PATCH /events?event_id=550e8400-e29b-41d4-a716-446655440000
+Content-Type: application/json
+
+{
+  "metadata": {
+    "updated": true,
+    "reason": "Data correction"
+  }
+}
+```
+
+**Delete Event:**
+```bash
+DELETE /events?event_id=550e8400-e29b-41d4-a716-446655440000
+```
+
+### Key Benefits
+
+- **Automatic CRUD**: GET, POST, PATCH, DELETE operations with zero boilerplate
+- **Type Safety**: Full TypeScript support with your event models
+- **Security**: Uses AWS Secrets Manager for database credentials
+- **Flexibility**: Override any method to add custom business logic
+- **Performance**: Connection pooling and parameterized queries
+- **Validation**: Automatic SQL injection prevention
+
+### Advanced Features
+
+**Custom Analytics Endpoint:**
+```typescript
+@ApiMethod('GET', '/analytics')
+async getAnalytics(event: any) {
+  const { clientId } = event.queryStringParameters || {};
+  
+  const queries = [
+    'SELECT COUNT(*) as total_events FROM events' + (clientId ? ' WHERE client_id = $1' : ''),
+    'SELECT entity_type, event_type, COUNT(*) as count FROM events' + 
+    (clientId ? ' WHERE client_id = $1' : '') + 
+    ' GROUP BY entity_type, event_type ORDER BY count DESC',
+  ];
+  
+  const params = clientId ? [clientId] : [];
+  
+  try {
+    const [totalResult, typeResult] = await Promise.all([
+      this.executeQuery(queries[0], params),
+      this.executeQuery(queries[1], params)
+    ]);
+    
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        totalEvents: parseInt(totalResult.rows[0].total_events),
+        eventsByType: typeResult.rows,
+        clientId: clientId || null
+      })
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Analytics query failed' })
+    };
+  }
+}
+```
+
+**Event Chain Tracking:**
+```typescript
+@ApiMethod('GET', '/chain/{eventId}')
+async getEventChain(event: any) {
+  const eventId = event.pathParameters?.eventId;
+  
+  if (!eventId) {
+    return {
+      statusCode: 400,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Event ID is required' })
+    };
+  }
+  
+  const query = `
+    WITH RECURSIVE event_chain AS (
+      SELECT *, 1 as level FROM events WHERE event_id = $1
+      UNION ALL
+      SELECT e.*, ec.level + 1 
+      FROM events e
+      JOIN event_chain ec ON e.previous_event_id = ec.event_id
+    )
+    SELECT * FROM event_chain ORDER BY level, occurred_at
+  `;
+  
+  try {
+    const result = await this.executeQuery(query, [eventId]);
+    return {
+      statusCode: 200,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        success: true,
+        data: result.rows,
+        count: result.rows.length
+      })
+    };
+  } catch (error) {
+    return {
+      statusCode: 500,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ error: 'Chain query failed' })
+    };
+  }
+}
+```
 
 ## 📚 API Reference
 
