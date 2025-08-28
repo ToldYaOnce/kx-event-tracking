@@ -7,7 +7,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "kx-events-decorators": "workspace:*",
+    "@toldyaonce/kx-events-decorators": "workspace:*",
     "@types/aws-lambda": "^8.10.0"
   },
   "devDependencies": {

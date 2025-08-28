@@ -6,7 +6,7 @@
  */
 
 import { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
-import { EventTracking } from 'kx-events-decorators';
+import { EventTracking } from '@toldyaonce/kx-events-decorators';
 
 interface CreateUserRequest {
   email: string;

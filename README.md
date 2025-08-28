@@ -4,11 +4,13 @@ A dual-package TypeScript monorepo for event tracking with AWS CDK infrastructur
 
 ## 📦 Packages
 
-### `kx-events-decorators`
+### `@toldyaonce/kx-events-decorators`
 Runtime decorators and helpers for event tracking in Lambda functions.
 
 ### `kx-events-cdk`
 CDK constructs for provisioning AWS infrastructure including VPC, RDS PostgreSQL, SQS, and consumer Lambda. **Note: This package provides the database infrastructure only - no API Gateway or query endpoints are included by design.**
+
+**✅ Cross-Environment Support**: All resources are created with explicit physical names and CloudFormation exports to enable cross-stack referencing without "cross-environment" errors.
 
 ## 🏗️ Architecture
 
@@ -135,31 +137,94 @@ graph LR
 
 ## 🚀 Quick Start
 
-### 1. Install Dependencies
+### 1. Install Packages
 
 ```bash
-pnpm install
+npm install @toldyaonce/kx-events-decorators @toldyaonce/kx-events-cdk
 ```
 
-### 2. Build Packages
+### 2. Deploy Infrastructure
 
-```bash
-pnpm run build
+**Basic Usage (Recommended):**
+```typescript
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+import * as cdk from 'aws-cdk-lib';
+
+const app = new cdk.App();
+const eventsStack = new EventTrackingStack(app, 'EventTrackingStack');
+
+// Access resources after creation
+console.log(eventsStack.database.instance); // RDS instance
+console.log(eventsStack.database.secret);   // Secrets Manager secret
+console.log(eventsStack.vpc);               // VPC instance
 ```
 
-### 3. Deploy Infrastructure
+**As Nested Stack:**
+```typescript
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+import * as cdk from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 
-```bash
-cd packages/kx-events-cdk
-pnpm run cdk deploy
+export class MyAppStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+    
+    // Create event tracking infrastructure as nested stack
+    const eventsStack = new EventTrackingStack(this, 'Events', {
+      resourcePrefix: 'myapp', // Optional: customize resource names
+    });
+    
+    // Use the resources in your application
+    const myLambda = new lambda.Function(this, 'MyFunction', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      code: lambda.Code.fromInline('exports.handler = async () => ({ statusCode: 200 });'),
+      handler: 'index.handler',
+      vpc: eventsStack.vpc, // Use the same VPC for network connectivity
+      vpcSubnets: {
+        subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_EGRESS,
+      },
+      environment: {
+        DB_SECRET_ARN: eventsStack.database.secret.secretArn,
+        EVENTS_QUEUE_URL: eventsStack.eventsBus.queue.queueUrl,
+      },
+    });
+    
+    // Grant permissions
+    eventsStack.database.secret.grantRead(myLambda);
+    eventsStack.eventsBus.queue.grantSendMessages(myLambda);
+    
+    // Allow your Lambda to connect to the database
+    eventsStack.database.securityGroup.addIngressRule(
+      myLambda.connections.securityGroups[0],
+      cdk.aws_ec2.Port.tcp(5432),
+      'Allow MyFunction to connect to events database'
+    );
+  }
+}
+
+// Deploy the nested stack
+const app = new cdk.App();
+new MyAppStack(app, 'MyAppStack', {
+  env: {
+    account: process.env.CDK_DEFAULT_ACCOUNT,
+    region: process.env.CDK_DEFAULT_REGION,
+  },
+});
 ```
 
-### 4. Install and Use in Your Lambda Functions
-
-```bash
-# Install from GitHub Packages
-npm install @toldyaonce/kx-events-decorators
+**With Custom Resource Names:**
+```typescript
+const eventsStack = new EventTrackingStack(app, 'EventTrackingStack', {
+  resourcePrefix: 'my-app',
+  vpcName: 'my-app-vpc',
+  databaseName: 'events',
+  secretName: 'my-app-db-secret',
+  queueName: 'my-app-events-queue',
+  functionName: 'my-app-events-consumer',
+});
 ```
+
+### 3. Use in Your Lambda Functions
 
 ```typescript
 import { EventTracking } from '@toldyaonce/kx-events-decorators';
@@ -174,6 +239,249 @@ class UserService {
     return { success: true, userId: 'user_123' };
   }
 }
+```
+
+## 🏗️ Nested Stack Implementation Guide
+
+### When to Use Nested Stacks
+
+Use EventTrackingStack as a nested stack when you want to:
+- **Integrate** event tracking into an existing application stack
+- **Share resources** (VPC, database) with other application components
+- **Manage** event tracking lifecycle alongside your main application
+- **Customize** resource naming to match your application conventions
+
+### Implementation Patterns
+
+#### Pattern 1: Shared Infrastructure
+```typescript
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+import * as cdk from 'aws-cdk-lib';
+import * as apigateway from 'aws-cdk-lib/aws-apigateway';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+
+export class ECommerceStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+    
+    // 1. Create event tracking infrastructure
+    const eventTracking = new EventTrackingStack(this, 'EventTracking', {
+      resourcePrefix: 'ecommerce',
+      databaseName: 'analytics',
+    });
+    
+    // 2. Create your API Lambda functions in the same VPC
+    const orderLambda = new lambda.Function(this, 'OrderFunction', {
+      runtime: lambda.Runtime.NODEJS_18_X,
+      code: lambda.Code.fromAsset('src/lambdas/orders'),
+      handler: 'index.handler',
+      vpc: eventTracking.vpc,
+      vpcSubnets: {
+        subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_EGRESS,
+      },
+      environment: {
+        EVENTS_QUEUE_URL: eventTracking.eventsBus.queue.queueUrl,
+        DB_SECRET_ARN: eventTracking.database.secret.secretArn,
+      },
+    });
+    
+    // 3. Grant permissions
+    eventTracking.eventsBus.queue.grantSendMessages(orderLambda);
+    eventTracking.database.secret.grantRead(orderLambda);
+    
+    // 4. Allow Lambda to connect to database
+    eventTracking.database.securityGroup.addIngressRule(
+      orderLambda.connections.securityGroups[0],
+      cdk.aws_ec2.Port.tcp(5432),
+      'Allow order Lambda to connect to analytics database'
+    );
+    
+    // 5. Create API Gateway
+    const api = new apigateway.RestApi(this, 'ECommerceApi');
+    const orders = api.root.addResource('orders');
+    orders.addMethod('POST', new apigateway.LambdaIntegration(orderLambda));
+  }
+}
+```
+
+#### Pattern 2: Multi-Environment Setup
+```typescript
+export interface AppStackProps extends cdk.StackProps {
+  environment: 'dev' | 'staging' | 'prod';
+}
+
+export class AppStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, props: AppStackProps) {
+    super(scope, id, props);
+    
+    const { environment } = props;
+    
+    // Environment-specific configuration
+    const config = {
+      dev: { instanceClass: 't3.micro', allocatedStorage: 20 },
+      staging: { instanceClass: 't3.small', allocatedStorage: 50 },
+      prod: { instanceClass: 't3.medium', allocatedStorage: 100 },
+    };
+    
+    // Create event tracking with environment-specific settings
+    const eventTracking = new EventTrackingStack(this, 'EventTracking', {
+      resourcePrefix: `myapp-${environment}`,
+      vpcName: `myapp-${environment}-vpc`,
+      secretName: `myapp-${environment}-db-secret`,
+      queueName: `myapp-${environment}-events-queue`,
+    });
+    
+    // Pass environment-specific config to RDS (requires extending the construct)
+    // ... rest of your application stack
+  }
+}
+
+// Deploy multiple environments
+const app = new cdk.App();
+new AppStack(app, 'MyAppDev', { environment: 'dev' });
+new AppStack(app, 'MyAppStaging', { environment: 'staging' });
+new AppStack(app, 'MyAppProd', { environment: 'prod' });
+```
+
+#### Pattern 3: Microservices Architecture
+```typescript
+export class MicroservicesStack extends cdk.Stack {
+  private readonly eventTracking: EventTrackingStack;
+  
+  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+    
+    // Shared event tracking infrastructure
+    this.eventTracking = new EventTrackingStack(this, 'SharedEventTracking', {
+      resourcePrefix: 'microservices',
+    });
+    
+    // Create multiple microservices
+    this.createUserService();
+    this.createOrderService();
+    this.createPaymentService();
+  }
+  
+  private createUserService() {
+    const userLambda = new lambda.Function(this, 'UserService', {
+      // ... Lambda configuration
+      vpc: this.eventTracking.vpc,
+      environment: {
+        EVENTS_QUEUE_URL: this.eventTracking.eventsBus.queue.queueUrl,
+        SERVICE_NAME: 'user-service',
+      },
+    });
+    
+    this.grantEventTrackingAccess(userLambda);
+  }
+  
+  private createOrderService() {
+    const orderLambda = new lambda.Function(this, 'OrderService', {
+      // ... Lambda configuration
+      vpc: this.eventTracking.vpc,
+      environment: {
+        EVENTS_QUEUE_URL: this.eventTracking.eventsBus.queue.queueUrl,
+        DB_SECRET_ARN: this.eventTracking.database.secret.secretArn,
+        SERVICE_NAME: 'order-service',
+      },
+    });
+    
+    this.grantEventTrackingAccess(orderLambda, true); // Also grant DB access
+  }
+  
+  private grantEventTrackingAccess(lambdaFunction: lambda.Function, includeDatabase = false) {
+    // Grant SQS permissions
+    this.eventTracking.eventsBus.queue.grantSendMessages(lambdaFunction);
+    
+    if (includeDatabase) {
+      // Grant database access
+      this.eventTracking.database.secret.grantRead(lambdaFunction);
+      this.eventTracking.database.securityGroup.addIngressRule(
+        lambdaFunction.connections.securityGroups[0],
+        cdk.aws_ec2.Port.tcp(5432),
+        `Allow ${lambdaFunction.node.id} to connect to database`
+      );
+    }
+  }
+}
+```
+
+### Best Practices for Nested Stacks
+
+#### 1. Resource Naming
+```typescript
+// ✅ Good: Use consistent prefixes
+const eventTracking = new EventTrackingStack(this, 'EventTracking', {
+  resourcePrefix: 'myapp-prod',
+  vpcName: 'myapp-prod-vpc',
+  secretName: 'myapp-prod-db-secret',
+});
+
+// ❌ Avoid: Inconsistent or generic names
+const eventTracking = new EventTrackingStack(this, 'Events', {});
+```
+
+#### 2. VPC Integration
+```typescript
+// ✅ Good: Use the EventTrackingStack VPC for your Lambdas
+const myLambda = new lambda.Function(this, 'MyFunction', {
+  vpc: eventTracking.vpc, // Same VPC for network connectivity
+  vpcSubnets: {
+    subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_EGRESS,
+  },
+});
+
+// ❌ Avoid: Creating separate VPCs (increases complexity and cost)
+const separateVpc = new ec2.Vpc(this, 'SeparateVpc');
+```
+
+#### 3. Security Group Management
+```typescript
+// ✅ Good: Explicitly grant database access
+eventTracking.database.securityGroup.addIngressRule(
+  myLambda.connections.securityGroups[0],
+  cdk.aws_ec2.Port.tcp(5432),
+  'Allow MyFunction to connect to events database'
+);
+
+// ✅ Good: Use descriptive security group rules
+eventTracking.database.securityGroup.addIngressRule(
+  cdk.aws_ec2.Peer.securityGroupId(apiLambdaSecurityGroup.securityGroupId),
+  cdk.aws_ec2.Port.tcp(5432),
+  'Allow API Lambdas to query events database'
+);
+```
+
+#### 4. Environment Variables
+```typescript
+// ✅ Good: Pass all necessary environment variables
+const myLambda = new lambda.Function(this, 'MyFunction', {
+  environment: {
+    // Event tracking
+    EVENTS_QUEUE_URL: eventTracking.eventsBus.queue.queueUrl,
+    DB_SECRET_ARN: eventTracking.database.secret.secretArn,
+    
+    // Application-specific
+    APP_NAME: 'my-application',
+    LOG_LEVEL: 'info',
+  },
+});
+```
+
+### Deployment Commands
+
+```bash
+# Deploy the entire stack (including nested EventTrackingStack)
+cdk deploy MyAppStack
+
+# Synthesize to see the generated CloudFormation
+cdk synth MyAppStack
+
+# Deploy with Docker disabled (if Docker issues)
+CDK_DOCKER=false cdk deploy MyAppStack
+
+# Deploy with approval bypass
+cdk deploy MyAppStack --require-approval never
 ```
 
 ## 📋 Event Contract
@@ -423,6 +731,64 @@ const myAppStack = new MyAppStack(app, 'MyApp', {
 - `stack.eventsBus` - EventsBus construct with `.queue`, `.consumerFunction`, `.deadLetterQueue`
 
 **Note:** The EventTrackingStack no longer includes an API Gateway or query endpoints. Use the patterns shown above to create your own API layer.
+
+## 🔗 Cross-Stack Resource Referencing
+
+The EventTrackingStack supports cross-environment resource referencing through CloudFormation exports. All resources are created with explicit physical names to prevent "cross-environment" errors.
+
+### Import Resources from Another Stack
+
+```typescript
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+
+// Import resources using CloudFormation exports
+const importedResources = EventTrackingStack.fromStackOutputs(
+  this, 
+  'ImportedEventResources', 
+  'EventTrackingStack' // Name of the deployed stack
+);
+
+// Use imported resources
+const myLambda = new lambda.Function(this, 'MyFunction', {
+  environment: {
+    DB_SECRET_ARN: importedResources.databaseSecretArn,
+    EVENTS_QUEUE_URL: importedResources.eventsQueueUrl,
+  },
+});
+
+// Import VPC for Lambda deployment
+const vpc = EventTrackingStack.importVpc(this, 'ImportedVPC', 'EventTrackingStack');
+```
+
+### Available Exports
+
+When you deploy an EventTrackingStack, these values are exported for cross-stack referencing:
+
+| Export Name | Description | Usage |
+|-------------|-------------|-------|
+| `{StackName}-VpcId` | VPC ID | Network configuration |
+| `{StackName}-PrivateSubnetIds` | Private subnet IDs (comma-separated) | Lambda VPC config |
+| `{StackName}-PublicSubnetIds` | Public subnet IDs (comma-separated) | Public resources |
+| `{StackName}-DbEndpoint` | RDS database endpoint | Database connections |
+| `{StackName}-DbPort` | RDS database port | Database connections |
+| `{StackName}-DbSecretArn` | Secrets Manager ARN | Database credentials |
+| `{StackName}-DbSecurityGroupId` | Database security group ID | Network access |
+| `{StackName}-EventsQueueUrl` | SQS queue URL | Event publishing |
+| `{StackName}-EventsQueueArn` | SQS queue ARN | IAM permissions |
+| `{StackName}-DeadLetterQueueUrl` | Dead letter queue URL | Error handling |
+| `{StackName}-ConsumerFunctionArn` | Consumer Lambda ARN | Monitoring/logging |
+
+### Resource Naming Convention
+
+All resources follow a consistent naming pattern:
+
+- **Default prefix**: `events-tracking` (when no `resourcePrefix` provided)
+- **VPC**: `{resourcePrefix}-vpc`
+- **Database**: `{resourcePrefix}-db`
+- **Secret**: `{resourcePrefix}-db-credentials`
+- **Queues**: `{resourcePrefix}-events-queue`, `{resourcePrefix}-events-dlq`
+- **Lambda**: `{resourcePrefix}-events-consumer`
+- **Security Groups**: `{resourcePrefix}-db-sg`, `{resourcePrefix}-lambda-sg`
 
 ## 📊 Monitoring
 
@@ -1608,36 +1974,449 @@ async getEventChain(event: any) {
 }
 ```
 
+## 🔧 Troubleshooting
+
+### Common Issues
+
+#### RDS Database Not Created
+
+**Problem**: EventTrackingStack creates Lambda functions but no RDS database appears in AWS console.
+
+**Root Cause**: This was caused by Docker bundling issues in the Lambda function creation process. When Docker wasn't available, the entire stack deployment would fail after creating some resources but before completing RDS provisioning.
+
+**✅ FIXED in version 1.0.13+**: The EventTrackingStack now uses Docker-free Lambda bundling, eliminating this issue entirely.
+
+**If you're still experiencing this issue**:
+
+1. **Update to latest version**:
+   ```bash
+   npm install @toldyaonce/kx-events-cdk@latest
+   ```
+
+2. **For older versions, use these workarounds**:
+   ```bash
+   # Option 1: Install Docker Desktop
+   # Install Docker Desktop for Windows/Mac and restart terminal
+   
+   # Option 2: Disable Docker bundling
+   CDK_DOCKER=false cdk deploy MyAppStack
+   
+   # Option 3: Deploy directly (bypasses synth issues)
+   cdk deploy MyAppStack --require-approval never
+   ```
+
+3. **Verify resources exist** after deployment:
+   - Check AWS RDS Console for PostgreSQL instance named `{resourcePrefix}-db`
+   - Check AWS Secrets Manager for secret named `{resourcePrefix}-db-credentials`
+   - Check CloudFormation stack resources in AWS Console
+
+**Expected Resources Created**:
+- ✅ RDS PostgreSQL instance: `{resourcePrefix}-db`
+- ✅ Secrets Manager secret: `{resourcePrefix}-db-credentials`
+- ✅ VPC with public/private subnets: `{resourcePrefix}-vpc`
+- ✅ Security groups for database access
+- ✅ SQS queues and consumer Lambda function
+
+#### Cross-Environment Resource Errors
+
+**Problem**: "Cannot use resource in a cross-environment fashion" errors when referencing EventTrackingStack resources.
+
+**Solution**: Use the CloudFormation import methods:
+```typescript
+// Instead of direct resource access across stacks
+const importedResources = EventTrackingStack.fromStackOutputs(this, 'Imported', 'EventTrackingStack');
+```
+
+#### Lambda Function Can't Connect to Database
+
+**Problem**: Consumer Lambda fails with connection errors.
+
+**Checklist**:
+1. Verify Lambda is in the same VPC as RDS
+2. Check security group rules allow port 5432
+3. Confirm `DB_SECRET_ARN` environment variable is set
+4. Verify Lambda has `secretsmanager:GetSecretValue` permission
+
+#### Queue Messages Not Processing
+
+**Problem**: Events sent to SQS but not appearing in database.
+
+**Debug Steps**:
+1. Check CloudWatch logs for consumer Lambda
+2. Verify SQS queue has messages
+3. Check dead letter queue for failed messages
+4. Confirm database table exists (run schema.sql)
+
+#### Lambda Runtime ImportModuleError
+
+**Problem**: Consumer Lambda fails with `Runtime.ImportModuleError: Error: Cannot find module 'pg'`.
+
+**Root Cause**: Lambda deployment package is missing required dependencies.
+
+**Solution**: 
+1. **Update to version 1.0.21+** (uses NodejsFunction with correct entry path):
+   ```bash
+   npm install @toldyaonce/kx-events-cdk@latest
+   ```
+
+2. **Deploy immediately** - NodejsFunction handles everything:
+   ```bash
+   cdk deploy YourStackName
+   ```
+
+3. **Verify deployment** by checking CloudWatch logs:
+   ```bash
+   # Check Lambda function logs for successful initialization
+   aws logs filter-log-events --log-group-name "/aws/lambda/your-function-name" --start-time $(date -d '5 minutes ago' +%s)000
+   ```
+
+**Root Cause Fixed**: Version 1.0.21+ uses `NodejsFunction` (industry standard) with correct entry path (`index.js`) which automatically:
+- ✅ Installs npm dependencies (`pg`, `@aws-sdk/client-secrets-manager`)
+- ✅ Bundles all dependencies into deployment package
+- ✅ Uses local bundling when Docker unavailable  
+- ✅ Points to correct JavaScript entry file
+- ✅ Eliminates Runtime.ImportModuleError permanently
+
+**Why NodejsFunction**: This is the standard CDK construct for Node.js/TypeScript Lambdas, used across all modern CDK projects.
+
+#### Nested Stack Verification
+
+**Problem**: Unsure if EventTrackingStack resources are created when used as nested stack.
+
+**Verification Steps**:
+1. **Check CloudFormation Console**:
+   ```
+   AWS Console → CloudFormation → Stacks → [Your Stack Name]
+   Look for nested stack: [YourStack]-EventTracking-[RandomId]
+   ```
+
+2. **Verify Resources Programmatically**:
+   ```typescript
+   // In your stack constructor, add logging
+   const eventTracking = new EventTrackingStack(this, 'EventTracking', {});
+   
+   console.log('VPC ID:', eventTracking.vpc.vpcId);
+   console.log('DB Endpoint:', eventTracking.database.instance.instanceEndpoint.hostname);
+   console.log('Queue URL:', eventTracking.eventsBus.queue.queueUrl);
+   ```
+
+3. **Check AWS Resources**:
+   - **RDS Console**: Look for database with name `{resourcePrefix}-db`
+   - **VPC Console**: Look for VPC with name `{resourcePrefix}-vpc`
+   - **SQS Console**: Look for queues `{resourcePrefix}-events-queue` and `{resourcePrefix}-events-dlq`
+   - **Secrets Manager**: Look for secret `{resourcePrefix}-db-credentials`
+
+4. **Test Database Connection**:
+   ```bash
+   # Get database endpoint from CloudFormation outputs
+   aws cloudformation describe-stacks --stack-name YourStackName \
+     --query 'Stacks[0].Outputs[?OutputKey==`DatabaseEndpoint`].OutputValue' \
+     --output text
+   ```
+
+**Expected Nested Stack Behavior**:
+- ✅ Creates separate CloudFormation nested stack
+- ✅ All RDS, VPC, SQS, Lambda resources are created
+- ✅ Resources are accessible via public properties
+- ✅ Works identically to standalone deployment
+
+### Version Compatibility
+
+| Version | Changes | Breaking |
+|---------|---------|----------|
+| 1.0.21+ | **CRITICAL FIX**: NodejsFunction with correct entry path (index.js), eliminates ImportModuleError | No |
+| 1.0.17+ | **CRITICAL FIX**: NodejsFunction implementation, industry standard for TypeScript Lambdas | No |
+| 1.0.16+ | **CRITICAL FIX**: Docker-free Lambda deployment, eliminates ImportModuleError completely | No |
+| 1.0.15+ | **CRITICAL FIX**: Lambda Runtime ImportModuleError, automatic dependency management | No |
+| 1.0.13+ | **CRITICAL FIX**: Docker-free Lambda bundling, eliminates RDS creation issues | No |
+| 1.0.12 | Enhanced cross-environment exports and documentation | No |
+| 1.0.11+ | Fixed RDS creation with empty props | No |
+| 1.0.10 | Added cross-environment support | No |
+| 1.0.9 | Removed EventsApi construct | Yes* |
+
+*Breaking only if you were using the removed EventsApi construct.
+
+**🚨 IMPORTANT**: If you're experiencing Lambda dependency errors or RDS database creation issues, update to version 1.0.21+ immediately.
+
 ## 📚 API Reference
 
-### Decorators
+### @EventTracking Decorator
 
-#### `@EventTracking(entityType, eventType, extra?)`
+The `@EventTracking` decorator is the primary way to add automatic event tracking to your Lambda functions. It wraps your handler and publishes a `TrackedEvent` to SQS after successful execution.
 
-Decorates a Lambda handler to automatically publish events after successful execution.
+#### Syntax
 
-**Parameters:**
-- `entityType: string` - Type of entity being tracked
-- `eventType: string` - Type of event being tracked  
-- `extra?: Partial<TrackedEvent>` - Additional event properties
+```typescript
+@EventTracking(entityType, eventType, extra?)
+```
 
-### Functions
+#### Parameters
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `entityType` | `string` | ✅ | The type of entity being tracked (e.g., 'user', 'order', 'payment') |
+| `eventType` | `string` | ✅ | The specific event type (e.g., 'created', 'updated', 'deleted', 'processed') |
+| `extra` | `Partial<TrackedEvent>` | ❌ | Additional event properties to include |
+
+#### How It Works
+
+1. **Execution**: Your original Lambda handler executes normally
+2. **Success Check**: Event is only published if the handler completes successfully (no exceptions)
+3. **Data Extraction**: Automatically extracts `clientId` and `previousEventId` from the request
+4. **Event Creation**: Creates a `TrackedEvent` with all required fields
+5. **Publishing**: Sends the event to SQS (fire-and-forget, won't fail your handler)
+
+#### Client ID Extraction Priority
+
+The decorator automatically extracts `clientId` from the request in this order:
+
+1. **Headers** (case-insensitive): `X-Client-Id`, `Client-Id`
+2. **Query Parameters**: `?clientId=value`
+3. **Request Body**: `{ "clientId": "value" }`
+4. **Authorizer Context**: `event.requestContext.authorizer.clientId`
+5. **Direct Event Property**: `event.clientId` (for worker Lambdas)
+
+#### Previous Event ID Extraction
+
+For event chaining, `previousEventId` is extracted from:
+
+1. **Headers**: `X-Previous-Event-Id`, `Previous-Event-Id`
+2. **Request Body**: `{ "previousEventId": "value" }`
+3. **Query Parameters**: `?previousEventId=value`
+4. **Direct Event Property**: `event.previousEventId`
+
+#### Basic Usage Examples
+
+**API Gateway Handler:**
+```typescript
+import { EventTracking } from '@toldyaonce/kx-events-decorators';
+import { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
+
+class UserService {
+  @EventTracking('user', 'user_created', {
+    source: 'api',
+    pointsAwarded: 100
+  })
+  async createUser(
+    event: APIGatewayProxyEvent,
+    context: Context
+  ): Promise<APIGatewayProxyResult> {
+    const body = JSON.parse(event.body || '{}');
+    
+    // Your business logic here
+    const user = await this.saveUser(body);
+    
+    return {
+      statusCode: 201,
+      body: JSON.stringify({ success: true, user })
+    };
+  }
+}
+```
+
+**Worker Lambda:**
+```typescript
+class NotificationWorker {
+  @EventTracking('notification', 'email_sent', {
+    source: 'worker',
+    pointsAwarded: 10
+  })
+  async processEmailJob(
+    event: { jobId: string; clientId: string; recipient: string },
+    context: Context
+  ) {
+    // Process the email job
+    await this.sendEmail(event.recipient);
+    
+    return {
+      jobId: event.jobId,
+      status: 'completed',
+      processedAt: new Date().toISOString()
+    };
+  }
+}
+```
+
+#### Advanced Usage
+
+**Event Chaining:**
+```typescript
+// First event in chain (previousEventId will be null)
+@EventTracking('order', 'order_created', { source: 'api' })
+async createOrder(event: APIGatewayProxyEvent, context: Context) {
+  // Creates order
+}
+
+// Subsequent event (include X-Previous-Event-Id header)
+@EventTracking('order', 'order_confirmed', { source: 'api' })
+async confirmOrder(event: APIGatewayProxyEvent, context: Context) {
+  // Confirms order - creates linked event chain
+}
+```
+
+**Multiple Entity Types:**
+```typescript
+@EventTracking('user', 'user_registered', { source: 'auth', pointsAwarded: 50 })
+async registerUser(event, context) { /* ... */ }
+
+@EventTracking('product', 'product_viewed', { source: 'catalog' })
+async viewProduct(event, context) { /* ... */ }
+
+@EventTracking('cart', 'item_added', { source: 'cart' })
+async addToCart(event, context) { /* ... */ }
+```
+
+#### Error Handling
+
+The decorator implements **fire-and-forget** event publishing:
+
+- ✅ **Handler Success**: Event is published after successful execution
+- ❌ **Handler Failure**: If handler throws exception, NO event is published
+- 🔥 **Publishing Failure**: If SQS publishing fails, it's logged but doesn't affect handler
+
+#### Request Examples
+
+**With Headers:**
+```bash
+curl -X POST https://api.example.com/users \
+  -H "Content-Type: application/json" \
+  -H "X-Client-Id: client_123" \
+  -H "X-Previous-Event-Id: event_456" \
+  -d '{"name": "John Doe", "email": "john@example.com"}'
+```
+
+**With Body:**
+```bash
+curl -X POST https://api.example.com/users \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "John Doe",
+    "email": "john@example.com",
+    "clientId": "client_123",
+    "previousEventId": "event_456"
+  }'
+```
+
+**With Query Parameters:**
+```bash
+curl -X GET "https://api.example.com/users?clientId=client_123&previousEventId=event_456"
+```
+
+### Helper Functions
 
 #### `publishEvent(event: TrackedEvent): Promise<void>`
 
-Manually publish an event to SQS (fire-and-forget).
+Manually publish an event to SQS. Use this for complex scenarios where you need more control than the decorator provides.
 
-#### `createTrackedEvent(...): TrackedEvent | null`
+```typescript
+import { publishEvent, TrackedEvent } from '@toldyaonce/kx-events-decorators';
 
-Create a TrackedEvent from Lambda event and context.
+const event: TrackedEvent = {
+  eventId: 'custom_event_123',
+  clientId: 'client_456',
+  previousEventId: null,
+  entityType: 'custom',
+  eventType: 'custom_action',
+  occurredAt: new Date().toISOString(),
+  source: 'manual',
+  metadata: { customField: 'customValue' }
+};
+
+await publishEvent(event);
+```
+
+#### `createTrackedEvent(entityType, eventType, event, context, extra?): TrackedEvent | null`
+
+Create a TrackedEvent from Lambda event and context. Used internally by the decorator.
+
+```typescript
+import { createTrackedEvent } from '@toldyaonce/kx-events-decorators';
+
+const trackedEvent = createTrackedEvent(
+  'user',
+  'user_updated',
+  lambdaEvent,
+  lambdaContext,
+  { source: 'api', pointsAwarded: 25 }
+);
+
+if (trackedEvent) {
+  await publishEvent(trackedEvent);
+}
+```
 
 #### `extractClientId(event, context): string | null`
 
-Extract clientId from Lambda event.
+Extract clientId from Lambda event using the priority order described above.
+
+```typescript
+import { extractClientId } from '@toldyaonce/kx-events-decorators';
+
+const clientId = extractClientId(event, context);
+if (!clientId) {
+  throw new Error('Client ID is required');
+}
+```
 
 #### `extractPreviousEventId(event): string | null`
 
-Extract previousEventId from Lambda event.
+Extract previousEventId from Lambda event for event chaining.
+
+```typescript
+import { extractPreviousEventId } from '@toldyaonce/kx-events-decorators';
+
+const previousEventId = extractPreviousEventId(event);
+// Will be null if not provided (start of event chain)
+```
+
+### Environment Variables
+
+Your Lambda function needs:
+
+```bash
+EVENTS_QUEUE_URL=https://sqs.region.amazonaws.com/account/queue-name
+```
+
+### IAM Permissions
+
+Your Lambda execution role needs:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["sqs:SendMessage"],
+      "Resource": "arn:aws:sqs:region:account:queue-name"
+    }
+  ]
+}
+```
+
+### Generated Event Structure
+
+```typescript
+{
+  "eventId": "550e8400-e29b-41d4-a716-446655440000", // Auto-generated UUID
+  "clientId": "client_123",                          // Extracted from request
+  "previousEventId": "event_456",                    // Extracted (or null)
+  "userId": "user_789",                             // From extra (optional)
+  "entityId": "entity_123",                         // From extra (optional)
+  "entityType": "user",                             // From decorator parameter
+  "eventType": "user_created",                      // From decorator parameter
+  "source": "api",                                  // From extra (optional)
+  "campaignId": "campaign_456",                     // From extra (optional)
+  "pointsAwarded": 100,                             // From extra (optional)
+  "sessionId": "session_789",                       // From extra (optional)
+  "occurredAt": "2024-01-15T10:30:00.000Z",       // Auto-generated
+  "metadata": {                                     // From extra (optional)
+    "userAgent": "Mozilla/5.0...",
+    "ipAddress": "192.168.1.1",
+    "customField": "customValue"
+  }
+}
+```
 
 ## 🤝 Contributing
 

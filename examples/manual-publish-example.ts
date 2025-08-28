@@ -7,7 +7,7 @@
  */
 
 import { Context } from 'aws-lambda';
-import { publishEvent, createTrackedEvent, TrackedEvent } from 'kx-events-decorators';
+import { publishEvent, createTrackedEvent, TrackedEvent } from '@toldyaonce/kx-events-decorators';
 
 interface PaymentEvent {
   paymentId: string;

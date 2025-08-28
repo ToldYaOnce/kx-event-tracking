@@ -9,6 +9,8 @@ export interface RdsDatabaseProps {
   databaseName?: string;
   instanceClass?: ec2.InstanceType;
   allocatedStorage?: number;
+  resourcePrefix?: string;
+  secretName?: string;
 }
 
 export class RdsDatabase extends Construct {
@@ -19,9 +21,12 @@ export class RdsDatabase extends Construct {
   constructor(scope: Construct, id: string, props: RdsDatabaseProps) {
     super(scope, id);
 
+    const resourcePrefix = props.resourcePrefix || 'events-tracking';
+
     // Create security group for RDS
     this.securityGroup = new ec2.SecurityGroup(this, 'DatabaseSecurityGroup', {
       vpc: props.vpc,
+      securityGroupName: `${resourcePrefix}-db-sg`,
       description: 'Security group for RDS PostgreSQL database',
       allowAllOutbound: false,
     });
@@ -35,6 +40,7 @@ export class RdsDatabase extends Construct {
 
     // Create database credentials secret
     this.secret = new secretsmanager.Secret(this, 'DatabaseCredentials', {
+      secretName: props.secretName || `${resourcePrefix}-db-credentials`,
       description: 'Credentials for the events tracking database',
       generateSecretString: {
         secretStringTemplate: JSON.stringify({
@@ -50,6 +56,7 @@ export class RdsDatabase extends Construct {
     // Create database subnet group
     const subnetGroup = new rds.SubnetGroup(this, 'DatabaseSubnetGroup', {
       vpc: props.vpc,
+      subnetGroupName: `${resourcePrefix}-db-subnet-group`,
       description: 'Subnet group for events tracking database',
       vpcSubnets: {
         subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
@@ -58,6 +65,7 @@ export class RdsDatabase extends Construct {
 
     // Create RDS instance
     this.instance = new rds.DatabaseInstance(this, 'Database', {
+      instanceIdentifier: `${resourcePrefix}-db`,
       engine: rds.DatabaseInstanceEngine.postgres({
         version: rds.PostgresEngineVersion.VER_15,
       }),
@@ -75,17 +83,7 @@ export class RdsDatabase extends Construct {
       removalPolicy: cdk.RemovalPolicy.DESTROY, // Set to RETAIN for production
     });
 
-    // Output the database endpoint
-    new cdk.CfnOutput(this, 'DatabaseEndpoint', {
-      value: this.instance.instanceEndpoint.hostname,
-      description: 'RDS PostgreSQL database endpoint',
-    });
-
-    // Output the secret ARN
-    new cdk.CfnOutput(this, 'DatabaseSecretArn', {
-      value: this.secret.secretArn,
-      description: 'ARN of the database credentials secret',
-    });
+    // Outputs are handled by the main EventTrackingStack
   }
 }
 

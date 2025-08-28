@@ -1,0 +1,9 @@
+{
+  "timestamp": "2025-08-28T18:59:57.288Z",
+  "nodeVersion": "v20.19.1",
+  "packageVersion": "1.0.22",
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.0.0",
+    "pg": "^8.11.0"
+  }
+}
