@@ -11,6 +11,10 @@
     "test": "pnpm -r test",
     "clean": "pnpm -r clean",
     "build-and-publish": "./build-and-publish.sh",
+    "build-and-publish-all": "./build-and-publish-all.sh",
+    "build-and-publish-decorators": "./build-and-publish-decorators.sh",
+    "build-and-publish-cdk": "./build-and-publish-cdk.sh",
+    "build-and-publish-consumers": "./build-and-publish-consumers.sh",
     "version-bump": "./build-and-publish.sh"
   },
   "devDependencies": {

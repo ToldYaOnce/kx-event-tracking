@@ -1,0 +1,44 @@
+{
+  "name": "@toldyaonce/kx-event-consumers",
+  "version": "1.0.6",
+  "description": "EventBridge discovery and consumer utilities for KX Event Tracking system",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/**/*",
+    "src/**/*"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test": "echo \"No tests yet\"",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "keywords": [
+    "aws",
+    "eventbridge",
+    "event-tracking",
+    "serverless",
+    "cdk"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-ssm": "^3.0.0",
+    "@aws-sdk/client-eventbridge": "^3.0.0",
+    "aws-cdk-lib": "^2.101.1",
+    "constructs": "^10.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0",
+    "@types/aws-lambda": "^8.10.0"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/toldyaonce/kx-event-tracking.git"
+  }
+}

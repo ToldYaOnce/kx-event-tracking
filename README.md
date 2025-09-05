@@ -20,13 +20,17 @@ graph TD
     A["🚀 Lambda Function<br/>@EventTracking Decorator"] --> B["📬 SQS Standard Queue<br/>events-queue"]
     B --> C["⚡ Consumer Lambda<br/>Node.js 18.x"]
     C --> D["🗄️ PostgreSQL RDS<br/>events table"]
+    C --> F["🌉 EventBridge Custom Bus<br/>Real-time event distribution"]
     B --> E["💀 Dead Letter Queue<br/>Failed messages"]
+    F --> G["🎯 Event Consumers<br/>Rules & Targets"]
     
     style A fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
     style B fill:#ff4b4b,stroke:#232f3e,stroke-width:2px,color:#fff
     style C fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
     style D fill:#336791,stroke:#232f3e,stroke-width:2px,color:#fff
     style E fill:#8b0000,stroke:#232f3e,stroke-width:2px,color:#fff
+    style F fill:#ff6b35,stroke:#232f3e,stroke-width:2px,color:#fff
+    style G fill:#4CAF50,stroke:#232f3e,stroke-width:2px,color:#fff
 ```
 
 ### AWS Infrastructure Overview
@@ -45,6 +49,7 @@ graph TB
     
     subgraph "☁️ AWS Managed Services"
         SQS["📬 SQS Queue + DLQ<br/>🔄 Batch Processing<br/>⏱️ 5min Visibility"]
+        EB["🌉 EventBridge Custom Bus<br/>🎯 Event Rules & Routing<br/>🔄 Real-time Distribution"]
         SECRETS["🗝️ Secrets Manager<br/>🔐 DB Credentials<br/>🔄 Auto Rotation"]
         CW["📊 CloudWatch<br/>📈 Metrics & Logs<br/>🚨 Alarms"]
     end
@@ -57,6 +62,7 @@ graph TB
     USER["👤 Your Lambda Functions<br/>@EventTracking"] --> SQS
     SQS --> LAMBDA
     LAMBDA --> RDS
+    LAMBDA --> EB
     LAMBDA --> SECRETS
     LAMBDA --> CW
     RDS --> SECRETS
@@ -65,13 +71,27 @@ graph TB
     QUERY --> RDS
     QUERY --> SECRETS
     
+    subgraph "🎯 Event Consumers (Your Apps)"
+        CONSUMER1["⚡ Consumer Lambda 1<br/>📧 Email Notifications"]
+        CONSUMER2["⚡ Consumer Lambda 2<br/>📊 Analytics Pipeline"]
+        CONSUMER3["⚡ Consumer Lambda 3<br/>🔔 Push Notifications"]
+    end
+    
+    EB --> CONSUMER1
+    EB --> CONSUMER2
+    EB --> CONSUMER3
+    
     style USER fill:#4CAF50,stroke:#232f3e,stroke-width:3px,color:#fff
     style SQS fill:#ff4b4b,stroke:#232f3e,stroke-width:2px,color:#fff
     style LAMBDA fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
     style RDS fill:#336791,stroke:#232f3e,stroke-width:2px,color:#fff
+    style EB fill:#ff6b35,stroke:#232f3e,stroke-width:2px,color:#fff
     style SECRETS fill:#dd344c,stroke:#232f3e,stroke-width:2px,color:#fff
     style CW fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
     style NAT fill:#ff9900,stroke:#232f3e,stroke-width:2px,color:#fff
+    style CONSUMER1 fill:#4CAF50,stroke:#232f3e,stroke-width:2px,color:#fff
+    style CONSUMER2 fill:#4CAF50,stroke:#232f3e,stroke-width:2px,color:#fff
+    style CONSUMER3 fill:#4CAF50,stroke:#232f3e,stroke-width:2px,color:#fff
 ```
 
 ### Event Processing Flow
@@ -82,6 +102,8 @@ sequenceDiagram
     participant SQS as 📬 SQS Queue
     participant Con as ⚡ Consumer
     participant DB as 🗄️ PostgreSQL
+    participant EB as 🌉 EventBridge
+    participant Consumers as 🎯 Event Consumers
     participant DLQ as 💀 Dead Letter Queue
 
     App->>Dec: Execute handler
@@ -95,6 +117,11 @@ sequenceDiagram
     Con->>Con: ✅ Validate event schema
     Con->>DB: 🔍 ON CONFLICT DO NOTHING
     Con->>DB: 💾 INSERT event
+    Con->>EB: 🌉 Publish to EventBridge
+    Note over Con,EB: After successful RDS insertion<br/>Fire-and-forget
+    
+    EB->>Consumers: 🎯 Route to matching rules
+    Note over EB,Consumers: Real-time event distribution<br/>Multiple consumers possible
     
     alt Processing Fails
         Con->>SQS: ❌ Message not deleted
@@ -135,6 +162,301 @@ graph LR
     style KMS fill:#dd344c,stroke:#232f3e,stroke-width:2px,color:#fff
 ```
 
+## 🌉 EventBridge Integration
+
+The KX Event Tracking system now includes **dual persistence**: events are stored in RDS for reliable querying **and** published to EventBridge for real-time event distribution to multiple consumers.
+
+### Architecture Benefits
+
+- **🗄️ Reliable Storage**: RDS provides ACID transactions and complex querying
+- **🌉 Real-time Distribution**: EventBridge enables immediate event routing to multiple consumers
+- **🎯 Flexible Routing**: Use EventBridge rules to route specific events to different targets
+- **🔄 Decoupled Architecture**: Consumers don't need direct database access
+- **📈 Scalable**: EventBridge handles high-throughput event distribution
+
+### Event Flow
+
+1. **Your Lambda** → Publishes to SQS (via `@EventTracking` decorator)
+2. **Consumer Lambda** → Stores in RDS → Publishes to EventBridge
+3. **EventBridge** → Routes events to your consumer applications based on rules
+
+### EventBridge Event Format
+
+Events published to EventBridge follow this structure:
+
+```json
+{
+  "Source": "kx-event-tracking",
+  "DetailType": "{entityType}.{eventType}",
+  "Detail": {
+    "eventId": "550e8400-e29b-41d4-a716-446655440000",
+    "clientId": "client_123",
+    "previousEventId": "event_456",
+    "userId": "user_789",
+    "entityId": "entity_123",
+    "entityType": "user",
+    "eventType": "user_created",
+    "source": "api",
+    "campaignId": "campaign_456",
+    "pointsAwarded": 100,
+    "sessionId": "session_789",
+    "occurredAt": "2024-01-15T10:30:00.000Z",
+    "metadata": {
+      "userAgent": "Mozilla/5.0...",
+      "ipAddress": "192.168.1.1"
+    }
+  },
+  "Time": "2024-01-15T10:30:00.000Z"
+}
+```
+
+### Service Discovery
+
+The EventBridge custom bus is registered in AWS Systems Manager Parameter Store for easy discovery:
+
+```bash
+# Get EventBridge ARN by service name
+aws ssm get-parameter --name "/eventbridge/services/kx-event-tracking/arn"
+
+# Get full service info
+aws ssm get-parameter --name "/eventbridge/services/kx-event-tracking/info"
+```
+
+## 🎯 Creating Event Consumers
+
+### CDK-based Consumer
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+
+export class MyEventConsumerStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Import EventBridge from the event tracking stack
+    const eventBridge = events.EventBus.fromEventBusArn(
+      this,
+      'KxEventBridge',
+      cdk.Fn.importValue('EventTrackingStack-EventBridgeArn')
+    );
+
+    // Create your consumer Lambda
+    const emailNotificationLambda = new NodejsFunction(this, 'EmailNotificationFunction', {
+      entry: 'src/lambdas/email-notifications/index.ts',
+      environment: {
+        SMTP_HOST: process.env.SMTP_HOST!,
+        SMTP_USER: process.env.SMTP_USER!,
+      },
+    });
+
+    // Create EventBridge rule to consume user events
+    new events.Rule(this, 'UserEventsRule', {
+      eventBus: eventBridge,
+      eventPattern: {
+        source: ['kx-event-tracking'],
+        detailType: ['user.user_created', 'user.user_updated'],
+        detail: {
+          clientId: ['client_123'], // Optional: filter by specific client
+        },
+      },
+      targets: [new targets.LambdaFunction(emailNotificationLambda)],
+    });
+
+    // Create rule for payment events
+    new events.Rule(this, 'PaymentEventsRule', {
+      eventBus: eventBridge,
+      eventPattern: {
+        source: ['kx-event-tracking'],
+        detailType: ['payment.payment_completed'],
+      },
+      targets: [new targets.LambdaFunction(emailNotificationLambda)],
+    });
+  }
+}
+```
+
+### Serverless Framework Consumer
+
+```yaml
+# serverless.yml
+service: my-event-consumer
+
+custom:
+  # Import EventBridge ARN from CloudFormation exports
+  eventBridgeArn: ${cf:EventTrackingStack.EventBridgeArn}
+
+functions:
+  emailNotifications:
+    handler: src/handlers/emailNotifications.handler
+    events:
+      - eventBridge:
+          eventBus: ${self:custom.eventBridgeArn}
+          pattern:
+            source: ['kx-event-tracking']
+            detail-type: ['user.user_created', 'user.user_updated']
+
+  analyticsProcessor:
+    handler: src/handlers/analytics.handler
+    events:
+      - eventBridge:
+          eventBus: ${self:custom.eventBridgeArn}
+          pattern:
+            source: ['kx-event-tracking']
+            detail-type: ['qr.qr.get', 'payment.payment_completed']
+            detail:
+              pointsAwarded: [{ "exists": true }] # Only events with points
+```
+
+### Consumer Lambda Handler
+
+```typescript
+// src/handlers/emailNotifications.ts
+import { EventBridgeEvent, Context } from 'aws-lambda';
+
+interface KxTrackedEvent {
+  eventId: string;
+  clientId: string;
+  userId?: string;
+  entityType: string;
+  eventType: string;
+  occurredAt: string;
+  metadata?: Record<string, any>;
+}
+
+export const handler = async (
+  event: EventBridgeEvent<string, KxTrackedEvent>,
+  context: Context
+) => {
+  console.log('Received event:', JSON.stringify(event, null, 2));
+
+  const { detail: trackedEvent } = event;
+  
+  try {
+    switch (event['detail-type']) {
+      case 'user.user_created':
+        await sendWelcomeEmail(trackedEvent);
+        break;
+        
+      case 'user.user_updated':
+        await sendProfileUpdateNotification(trackedEvent);
+        break;
+        
+      case 'payment.payment_completed':
+        await sendPaymentConfirmation(trackedEvent);
+        break;
+        
+      default:
+        console.log('Unhandled event type:', event['detail-type']);
+    }
+    
+    console.log('Successfully processed event:', trackedEvent.eventId);
+  } catch (error) {
+    console.error('Failed to process event:', error);
+    throw error; // This will cause EventBridge to retry
+  }
+};
+
+async function sendWelcomeEmail(event: KxTrackedEvent) {
+  console.log('Sending welcome email for user:', event.userId);
+  // Your email sending logic here
+}
+
+async function sendProfileUpdateNotification(event: KxTrackedEvent) {
+  console.log('Sending profile update notification for user:', event.userId);
+  // Your notification logic here
+}
+
+async function sendPaymentConfirmation(event: KxTrackedEvent) {
+  console.log('Sending payment confirmation for client:', event.clientId);
+  // Your payment confirmation logic here
+}
+```
+
+### Cross-Region Event Consumers
+
+```typescript
+// Consumer in different region
+export class CrossRegionConsumerStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    // Import EventBridge from different region
+    const eventBridge = events.EventBus.fromEventBusArn(
+      this,
+      'KxEventBridge',
+      'arn:aws:events:us-east-1:123456789012:event-bus/kx-event-tracking-events-bus'
+    );
+
+    // Create cross-region rule
+    new events.Rule(this, 'CrossRegionRule', {
+      eventBus: eventBridge,
+      eventPattern: {
+        source: ['kx-event-tracking'],
+        detailType: ['user.user_created'],
+      },
+      targets: [
+        new targets.SqsQueue(myQueue), // Send to SQS in this region
+        new targets.LambdaFunction(myLambda), // Or invoke Lambda directly
+      ],
+    });
+  }
+}
+```
+
+### Event Filtering Examples
+
+```typescript
+// Filter by client ID
+eventPattern: {
+  source: ['kx-event-tracking'],
+  detailType: ['user.user_created'],
+  detail: {
+    clientId: ['client_123', 'client_456'], // Multiple clients
+  },
+}
+
+// Filter by event source
+eventPattern: {
+  source: ['kx-event-tracking'],
+  detail: {
+    source: ['api'], // Only API events, not worker events
+  },
+}
+
+// Filter by points awarded
+eventPattern: {
+  source: ['kx-event-tracking'],
+  detail: {
+    pointsAwarded: [{ "numeric": [">", 0] }], // Only events with points
+  },
+}
+
+// Filter by metadata
+eventPattern: {
+  source: ['kx-event-tracking'],
+  detail: {
+    metadata: {
+      campaign: ['holiday-2024'], // Specific campaign
+    },
+  },
+}
+
+// Complex filtering
+eventPattern: {
+  source: ['kx-event-tracking'],
+  detailType: [{ "prefix": "user." }], // All user events
+  detail: {
+    clientId: ['client_123'],
+    source: ['api', 'worker'],
+    pointsAwarded: [{ "exists": true }],
+  },
+}
+```
+
 ## 🚀 Quick Start
 
 ### 1. Install Packages
@@ -163,7 +485,7 @@ console.log(eventsStack.vpc);               // VPC instance
 ```typescript
 import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
 import * as cdk from 'aws-cdk-lib';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 
 export class MyAppStack extends cdk.Stack {
   constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
@@ -175,10 +497,8 @@ export class MyAppStack extends cdk.Stack {
     });
     
     // Use the resources in your application
-    const myLambda = new lambda.Function(this, 'MyFunction', {
-      runtime: lambda.Runtime.NODEJS_18_X,
-      code: lambda.Code.fromInline('exports.handler = async () => ({ statusCode: 200 });'),
-      handler: 'index.handler',
+    const myLambda = new NodejsFunction(this, 'MyFunction', {
+      entry: 'src/handlers/inline-handler.ts', // Move inline code to separate file;'),
       vpc: eventsStack.vpc, // Use the same VPC for network connectivity
       vpcSubnets: {
         subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_EGRESS,
@@ -258,7 +578,7 @@ Use EventTrackingStack as a nested stack when you want to:
 import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
 import * as cdk from 'aws-cdk-lib';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 
 export class ECommerceStack extends cdk.Stack {
   constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
@@ -271,10 +591,8 @@ export class ECommerceStack extends cdk.Stack {
     });
     
     // 2. Create your API Lambda functions in the same VPC
-    const orderLambda = new lambda.Function(this, 'OrderFunction', {
-      runtime: lambda.Runtime.NODEJS_18_X,
-      code: lambda.Code.fromAsset('src/lambdas/orders'),
-      handler: 'index.handler',
+    const orderLambda = new NodejsFunction(this, 'OrderFunction', {
+      entry: 'src/lambdas/orders/index.ts',
       vpc: eventTracking.vpc,
       vpcSubnets: {
         subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_EGRESS,
@@ -363,7 +681,7 @@ export class MicroservicesStack extends cdk.Stack {
   }
   
   private createUserService() {
-    const userLambda = new lambda.Function(this, 'UserService', {
+    const userLambda = new NodejsFunction(this, 'UserService', {
       // ... Lambda configuration
       vpc: this.eventTracking.vpc,
       environment: {
@@ -376,7 +694,7 @@ export class MicroservicesStack extends cdk.Stack {
   }
   
   private createOrderService() {
-    const orderLambda = new lambda.Function(this, 'OrderService', {
+    const orderLambda = new NodejsFunction(this, 'OrderService', {
       // ... Lambda configuration
       vpc: this.eventTracking.vpc,
       environment: {
@@ -424,7 +742,7 @@ const eventTracking = new EventTrackingStack(this, 'Events', {});
 #### 2. VPC Integration
 ```typescript
 // ✅ Good: Use the EventTrackingStack VPC for your Lambdas
-const myLambda = new lambda.Function(this, 'MyFunction', {
+const myLambda = new NodejsFunction(this, 'MyFunction', {
   vpc: eventTracking.vpc, // Same VPC for network connectivity
   vpcSubnets: {
     subnetType: cdk.aws_ec2.SubnetType.PRIVATE_WITH_EGRESS,
@@ -455,7 +773,7 @@ eventTracking.database.securityGroup.addIngressRule(
 #### 4. Environment Variables
 ```typescript
 // ✅ Good: Pass all necessary environment variables
-const myLambda = new lambda.Function(this, 'MyFunction', {
+const myLambda = new NodejsFunction(this, 'MyFunction', {
   environment: {
     // Event tracking
     EVENTS_QUEUE_URL: eventTracking.eventsBus.queue.queueUrl,
@@ -694,12 +1012,20 @@ The CDK package provisions:
 - Visibility timeout: 5 minutes
 - Max receive count: 3
 
+### EventBridge
+- Custom event bus for real-time distribution
+- Automatic event publishing after RDS insertion
+- Support for multiple event consumers
+- Event filtering and routing capabilities
+- Cross-region event distribution
+
 ### Lambda Consumer
 - Node.js 18.x runtime
 - VPC-enabled with RDS access
 - Batch processing (up to 10 messages)
 - Automatic retry and DLQ handling
 - Idempotent inserts with `ON CONFLICT DO NOTHING`
+- EventBridge publishing after successful RDS insertion
 
 ## 🔧 Using CDK Constructs Programmatically
 
@@ -713,6 +1039,8 @@ const stack = new EventTrackingStack(app, 'MyEventStack');
 // Access the created resources
 const queueUrl = stack.eventsBus.queue.queueUrl;
 const queueArn = stack.eventsBus.queue.queueArn;
+const eventBridge = stack.eventsBus.eventBridge;
+const eventBridgeArn = stack.eventsBus.eventBridge.eventBusArn;
 const consumerFunction = stack.eventsBus.consumerFunction;
 const database = stack.database.instance;
 const databaseSecret = stack.database.secret;
@@ -728,7 +1056,7 @@ const myAppStack = new MyAppStack(app, 'MyApp', {
 ### Available Public Properties
 - `stack.vpc` - The VPC instance
 - `stack.database` - RdsDatabase construct with `.instance` and `.secret`
-- `stack.eventsBus` - EventsBus construct with `.queue`, `.consumerFunction`, `.deadLetterQueue`
+- `stack.eventsBus` - EventsBus construct with `.queue`, `.eventBridge`, `.consumerFunction`, `.deadLetterQueue`
 
 **Note:** The EventTrackingStack no longer includes an API Gateway or query endpoints. Use the patterns shown above to create your own API layer.
 
@@ -749,7 +1077,7 @@ const importedResources = EventTrackingStack.fromStackOutputs(
 );
 
 // Use imported resources
-const myLambda = new lambda.Function(this, 'MyFunction', {
+const myLambda = new NodejsFunction(this, 'MyFunction', {
   environment: {
     DB_SECRET_ARN: importedResources.databaseSecretArn,
     EVENTS_QUEUE_URL: importedResources.eventsQueueUrl,
@@ -776,6 +1104,8 @@ When you deploy an EventTrackingStack, these values are exported for cross-stack
 | `{StackName}-EventsQueueUrl` | SQS queue URL | Event publishing |
 | `{StackName}-EventsQueueArn` | SQS queue ARN | IAM permissions |
 | `{StackName}-DeadLetterQueueUrl` | Dead letter queue URL | Error handling |
+| `{StackName}-EventBridgeArn` | EventBridge custom bus ARN | Event consumer setup |
+| `{StackName}-EventBridgeName` | EventBridge custom bus name | Event consumer setup |
 | `{StackName}-ConsumerFunctionArn` | Consumer Lambda ARN | Monitoring/logging |
 
 ### Resource Naming Convention
@@ -1443,7 +1773,7 @@ Here's how to create your own query Lambda using CDK and attach it to your API G
 
 ```typescript
 import * as cdk from 'aws-cdk-lib';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
@@ -1453,9 +1783,7 @@ const eventStack = new EventTrackingStack(this, 'EventTracking');
 
 // Create your query Lambda
 const queryFunction = new NodejsFunction(this, 'EventsQueryFunction', {
-  runtime: lambda.Runtime.NODEJS_18_X,
   entry: './src/lambdas/query/index.ts', // Your Lambda code
-  handler: 'handler',
   timeout: cdk.Duration.seconds(30),
   memorySize: 512,
   vpc: eventStack.vpc,
@@ -1719,7 +2047,7 @@ export const handler = async (event: any) => {
 ```typescript
 // src/stacks/ApiStack.ts
 import * as cdk from 'aws-cdk-lib';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
@@ -1731,9 +2059,7 @@ export class EventsApiStack extends cdk.Stack {
 
     // Create Lambda function for events API
     const eventsFunction = new NodejsFunction(this, 'EventsFunction', {
-      runtime: lambda.Runtime.NODEJS_18_X,
       entry: './src/handlers/events.ts',
-      handler: 'handler',
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
       vpc: eventStack.vpc,

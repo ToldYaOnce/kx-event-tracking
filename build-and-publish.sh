@@ -80,11 +80,8 @@ bump_version() {
     local current_version=$(node -p "require('./package.json').version")
     print_status "Current version of $package_name: $current_version"
     
-    # Bump patch version
-    npm version patch --no-git-tag-version
-    
-    # Get new version
-    local new_version=$(node -p "require('./package.json').version")
+    # Bump patch version using our custom script
+    local new_version=$(node ../scripts/bump-version.js . patch | tail -1 | sed 's/^v//')
     print_success "Bumped $package_name to version: $new_version"
     
     cd - > /dev/null
@@ -126,14 +123,18 @@ decorators_version=$(bump_version "packages/kx-events-decorators" "kx-events-dec
 # Process kx-events-cdk
 cdk_version=$(bump_version "packages/kx-events-cdk" "kx-events-cdk")
 
+# Process kx-event-consumers
+consumers_version=$(bump_version "packages/kx-event-consumers" "kx-event-consumers")
+
 # Rebuild after version bumps (in case version is used in build)
 print_status "Rebuilding packages after version bumps..."
 pnpm run build
 
 # Publish packages
 print_status "Publishing packages..."
-publish_package "packages/kx-events-decorators" "kx-events-decorators" "$decorators_version"
-publish_package "packages/kx-events-cdk" "kx-events-cdk" "$cdk_version"
+publish_package "packages/kx-events-decorators" "@toldyaonce/kx-events-decorators" "$decorators_version"
+publish_package "packages/kx-events-cdk" "@toldyaonce/kx-events-cdk" "$cdk_version"
+publish_package "packages/kx-event-consumers" "@toldyaonce/kx-event-consumers" "$consumers_version"
 
 # Summary
 echo
@@ -142,6 +143,7 @@ echo
 print_status "Summary:"
 echo "  📦 kx-events-decorators: $decorators_version"
 echo "  📦 kx-events-cdk: $cdk_version"
+echo "  📦 kx-event-consumers: $consumers_version"
 echo
 
 if [ "$SKIP_PUBLISH" = true ]; then
@@ -150,6 +152,7 @@ if [ "$SKIP_PUBLISH" = true ]; then
     echo "  npm login --scope=@toldyaonce --registry=https://npm.pkg.github.com"
     echo "  cd packages/kx-events-decorators && npm publish --registry=https://npm.pkg.github.com"
     echo "  cd packages/kx-events-cdk && npm publish --registry=https://npm.pkg.github.com"
+    echo "  cd packages/kx-event-consumers && npm publish --registry=https://npm.pkg.github.com"
 else
     print_success "All packages have been built, versioned, and published to GitHub Packages successfully!"
 fi
@@ -168,7 +171,7 @@ if [ "$SKIP_PUBLISH" != true ]; then
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         tag_name="v$(date +%Y%m%d-%H%M%S)"
         git add .
-        git commit -m "chore: bump versions - decorators@$decorators_version, cdk@$cdk_version" || true
+        git commit -m "chore: bump versions - decorators@$decorators_version, cdk@$cdk_version, consumers@$consumers_version" || true
         git tag "$tag_name"
         print_success "Created git tag: $tag_name"
         echo "Don't forget to push: git push && git push --tags"

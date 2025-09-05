@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { RdsDatabase } from '../src/constructs/RdsDatabase';
 import { EventsBus } from '../src/constructs/EventsBus';
 
@@ -10,6 +11,7 @@ export interface EventTrackingStackProps extends cdk.StackProps {
   readonly vpcName?: string;
   readonly databaseName?: string;
   readonly secretName?: string;
+  readonly serviceName?: string;
   readonly queueName?: string;
   readonly functionName?: string;
 }
@@ -139,10 +141,45 @@ export class EventTrackingStack extends cdk.Stack {
       exportName: `${stackName}-DeadLetterQueueArn`,
     });
 
+    new cdk.CfnOutput(this, 'EventBridgeArn', {
+      value: this.eventsBus.eventBridge.eventBusArn,
+      description: 'ARN of the EventBridge custom bus',
+      exportName: `${stackName}-EventBridgeArn`,
+    });
+
+    new cdk.CfnOutput(this, 'EventBridgeName', {
+      value: this.eventsBus.eventBridge.eventBusName,
+      description: 'Name of the EventBridge custom bus',
+      exportName: `${stackName}-EventBridgeName`,
+    });
+
     new cdk.CfnOutput(this, 'ConsumerFunctionArn', {
       value: this.eventsBus.consumerFunction.functionArn,
       description: 'ARN of the events consumer Lambda function',
       exportName: `${stackName}-ConsumerFunctionArn`,
+    });
+
+    // Register EventBridge service in SSM Parameter Store for discovery
+    const serviceName = props?.serviceName || 'kx-event-tracking';
+
+    new ssm.StringParameter(this, 'EventBridgeServiceArn', {
+      parameterName: `/eventbridge/services/${serviceName}/arn`,
+      stringValue: this.eventsBus.eventBridge.eventBusArn,
+      description: `EventBridge ARN for ${serviceName} service`,
+    });
+
+    new ssm.StringParameter(this, 'EventBridgeServiceInfo', {
+      parameterName: `/eventbridge/services/${serviceName}/info`,
+      stringValue: JSON.stringify({
+        arn: this.eventsBus.eventBridge.eventBusArn,
+        name: this.eventsBus.eventBridge.eventBusName,
+        version: '1.0.0',
+        eventSources: ['kx-event-tracking'],
+        supportedEvents: ['qr.*', 'payment.*', 'user.*', 'notification.*'],
+        region: cdk.Stack.of(this).region,
+        account: cdk.Stack.of(this).account,
+      }),
+      description: `Service info for ${serviceName} EventBridge`,
     });
   }
 

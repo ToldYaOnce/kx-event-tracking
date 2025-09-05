@@ -1,6 +1,6 @@
 {
   "name": "@toldyaonce/kx-events-decorators",
-  "version": "1.0.20",
+  "version": "1.0.23",
   "description": "Runtime decorators and helpers for event tracking",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
