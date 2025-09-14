@@ -17,15 +17,28 @@ export const sendMessageToQueue = async (messageBody: string): Promise<void> => 
     const client = getSQSClient();
     const queueUrl = getEventsQueueUrl();
     
+    // Parse event for logging
+    let eventInfo = 'unknown';
+    try {
+      const event = JSON.parse(messageBody);
+      eventInfo = `${event.eventId} (${event.entityType}.${event.eventType})`;
+    } catch (e) {
+      // Ignore parsing errors for logging
+    }
+    
+    console.log(`📤 Sending SQS message for event ${eventInfo} to queue: ${queueUrl}`);
+    
     const command = new SendMessageCommand({
       QueueUrl: queueUrl,
       MessageBody: messageBody,
     });
     
-    await client.send(command);
+    const result = await client.send(command);
+    console.log(`📤 SQS message sent successfully for event ${eventInfo}, MessageId: ${result.MessageId}`);
   } catch (error) {
-    // Fire-and-forget: log errors, don't throw
-    console.error('Failed to send message to SQS:', error);
+    // Re-throw for Promise.allSettled to catch
+    console.error('📤 Failed to send message to SQS:', error);
+    throw error;
   }
 };
 

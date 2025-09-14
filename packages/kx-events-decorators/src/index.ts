@@ -13,6 +13,7 @@ export type {
 } from './types';
 
 // Utility exports
-export { getEventsQueueUrl } from './env';
+export { getEventsQueueUrl, getEventBusName } from './env';
 export { getSQSClient, sendMessageToQueue } from './sqsClient';
+export { getEventBridgeClient, publishToEventBridge } from './eventBridgeClient';
 

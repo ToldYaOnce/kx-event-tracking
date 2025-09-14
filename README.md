@@ -561,6 +561,95 @@ class UserService {
 }
 ```
 
+## ⚡ Real-time EventBridge Setup (Required for Instant Notifications)
+
+**IMPORTANT:** For real-time EventBridge delivery (0-1 second), your business Lambdas need EventBridge permissions.
+
+### Producer Stack Requirements
+
+If you're using `@EventTracking` decorators, add these permissions to your business Lambdas:
+
+```typescript
+import * as cdk from 'aws-cdk-lib';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import { EventTrackingStack } from '@toldyaonce/kx-events-cdk';
+
+export class MyAppStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+    
+    // 1. Create event tracking infrastructure
+    const eventsStack = new EventTrackingStack(this, 'Events', {
+      serviceName: 'my-service', // For EventBridge discovery
+    });
+    
+    // 2. Your business Lambdas (with @EventTracking decorators)
+    const userService = new NodejsFunction(this, 'UserService', {
+      entry: 'src/services/user.ts',
+    });
+    
+    const orderService = new NodejsFunction(this, 'OrderService', {
+      entry: 'src/services/order.ts',
+    });
+    
+    // 3. 🚨 REQUIRED: Add EventBridge permissions to ALL business Lambdas
+    [userService, orderService].forEach(lambda => {
+      // Grant EventBridge publishing permission
+      lambda.addToRolePolicy(new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ['events:PutEvents'],
+        resources: [eventsStack.eventsBus.eventBridge.eventBusArn]
+      }));
+      
+      // Add environment variable for EventBridge name
+      lambda.addEnvironment('EVENT_BUS_NAME', eventsStack.eventsBus.eventBridge.eventBusName);
+      
+      // Add SQS environment (for guaranteed delivery)
+      lambda.addEnvironment('EVENTS_QUEUE_URL', eventsStack.eventsBus.queue.queueUrl);
+    });
+  }
+}
+```
+
+### What This Enables
+
+**✅ With EventBridge Permissions:**
+```
+@EventTracking → SQS + EventBridge (concurrent)
+                ↓              ↓
+            RDS Storage    Consumer (0-1 sec) ⚡
+```
+
+**❌ Without EventBridge Permissions:**
+```
+@EventTracking → SQS only
+                ↓
+            [5+ second delay]
+                ↓
+            RDS + EventBridge → Consumer (5-10 sec) 🐌
+```
+
+### Consumer Setup (Zero Configuration)
+
+Consumers don't need any special permissions - just import and create rules:
+
+```typescript
+import { EventBridgeDiscovery } from '@toldyaonce/kx-event-consumers';
+
+// Dead-simple consumer setup
+const kxEvents = EventBridgeDiscovery.importEventBridge(
+  this, 
+  'KxEventBridge', 
+  'my-service' // Same service name as producer
+);
+
+new events.Rule(this, 'UserEventsRule', {
+  eventBus: kxEvents,
+  eventPattern: { source: ['kx-event-tracking'] },
+  targets: [new targets.LambdaFunction(myConsumerLambda)]
+});
+```
+
 ## 🏗️ Nested Stack Implementation Guide
 
 ### When to Use Nested Stacks

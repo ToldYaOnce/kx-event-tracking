@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as events from 'aws-cdk-lib/aws-events';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
@@ -15,17 +16,26 @@ export interface EventsBusProps {
   resourcePrefix?: string;
   queueName?: string;
   functionName?: string;
+  serviceName?: string;
+  eventBusName?: string;
 }
 
 export class EventsBus extends Construct {
   public readonly queue: sqs.Queue;
   public readonly deadLetterQueue: sqs.Queue;
   public readonly consumerFunction: NodejsFunction;
+  public readonly eventBridge: events.EventBus;
 
   constructor(scope: Construct, id: string, props: EventsBusProps) {
     super(scope, id);
 
     const resourcePrefix = props.resourcePrefix || 'events-tracking';
+    
+    // Create EventBridge for real-time event publishing
+    const eventBusName = props.eventBusName || `${resourcePrefix}-events-bus`;
+    this.eventBridge = new events.EventBus(this, 'EventsBridge', {
+      eventBusName,
+    });
 
     // Create dead letter queue
     this.deadLetterQueue = new sqs.Queue(this, 'EventsDeadLetterQueue', {

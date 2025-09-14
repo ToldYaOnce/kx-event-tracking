@@ -1,9 +1,5 @@
 import { SQSEvent, SQSRecord, Context } from 'aws-lambda';
-import { EventBridgeClient, PutEventsCommand } from '@aws-sdk/client-eventbridge';
 import { insertEvents, closeDbConnection, initializeSchema } from './db';
-
-// Initialize EventBridge client
-const eventBridgeClient = new EventBridgeClient({});
 
 interface TrackedEvent {
   eventId: string;
@@ -130,87 +126,8 @@ function parseAndValidateMessages(records: SQSRecord[]): TrackedEvent[] {
   return validEvents;
 }
 
-/**
- * Publishes events to EventBridge after successful RDS insertion
- */
-async function publishToEventBridge(events: TrackedEvent[]): Promise<void> {
-  const eventBusArn = process.env.EVENT_BUS_ARN;
-  const eventBusName = process.env.EVENT_BUS_NAME;
-  
-  if (!eventBusArn && !eventBusName) {
-    console.warn('Neither EVENT_BUS_ARN nor EVENT_BUS_NAME configured, skipping EventBridge publishing');
-    return;
-  }
-
-  if (events.length === 0) {
-    return;
-  }
-
-  // Use explicit bus name if provided, otherwise extract from ARN
-  let busName: string;
-  if (eventBusName) {
-    busName = eventBusName;
-  } else if (eventBusArn) {
-    // Extract bus name from ARN for EventBridge API
-    // ARN format: arn:aws:events:region:account:event-bus/bus-name
-    busName = eventBusArn.split('/').pop() || eventBusArn;
-  } else {
-    console.warn('No valid EventBridge configuration found');
-    return;
-  }
-
-  console.log(`Publishing ${events.length} events to EventBridge bus: ${busName}${eventBusArn ? ` (ARN: ${eventBusArn})` : ''}`);
-
-  try {
-    // EventBridge has a limit of 10 entries per PutEvents call
-    const batchSize = 10;
-    const batches = [];
-    
-    for (let i = 0; i < events.length; i += batchSize) {
-      batches.push(events.slice(i, i + batchSize));
-    }
-
-    for (const batch of batches) {
-      const entries = batch.map(event => ({
-        Source: 'kx-event-tracking',
-        DetailType: `${event.entityType}.${event.eventType}`,
-        Detail: JSON.stringify(event),
-        EventBusName: busName,
-        Time: new Date(event.occurredAt),
-      }));
-
-      // Log detailed information about what we're publishing
-      console.log('📤 EventBridge entries being published:', JSON.stringify({
-        busName,
-        entriesCount: entries.length,
-        entries: entries.map(entry => ({
-          Source: entry.Source,
-          DetailType: entry.DetailType,
-          EventBusName: entry.EventBusName,
-          Time: entry.Time,
-          DetailPreview: JSON.parse(entry.Detail).eventId || 'No eventId'
-        }))
-      }, null, 2));
-
-      const command = new PutEventsCommand({ Entries: entries });
-      const result = await eventBridgeClient.send(command);
-      
-      if (result.FailedEntryCount && result.FailedEntryCount > 0) {
-        console.warn(`EventBridge publishing: ${result.FailedEntryCount} failed entries out of ${entries.length}`);
-        result.Entries?.forEach((entry, index) => {
-          if (entry.ErrorCode) {
-            console.error(`EventBridge entry ${index} failed:`, entry.ErrorCode, entry.ErrorMessage);
-          }
-        });
-      } else {
-        console.log(`Successfully published ${entries.length} events to EventBridge`);
-      }
-    }
-  } catch (error) {
-    console.error('Failed to publish events to EventBridge:', error);
-    // Don't throw - this is fire-and-forget to avoid affecting RDS insertion
-  }
-}
+// ✅ EventBridge publishing removed - now handled directly by @EventTracking decorator
+// This eliminates duplicate events and provides real-time delivery (0-1 second vs 5+ seconds)
 
 /**
  * Lambda handler for processing SQS events
@@ -235,10 +152,9 @@ export const handler = async (event: SQSEvent, context: Context): Promise<void> 
     // Batch insert events with idempotency
     await insertEvents(validEvents);
 
-    // Publish events to EventBridge after successful RDS insertion
-    await publishToEventBridge(validEvents);
-
-    console.log('Successfully processed all events');
+    // ✅ EventBridge publishing now handled directly by @EventTracking decorator
+    // This eliminates duplicate events and provides real-time delivery
+    console.log(`Successfully stored ${validEvents.length} events in RDS`);
   } catch (error) {
     console.error('Failed to process SQS events:', error);
     throw error; // This will cause the messages to be retried or sent to DLQ

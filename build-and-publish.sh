@@ -165,15 +165,15 @@ echo "  • Consider creating a git tag for this release"
 echo
 
 # Optional: Create git tag
-if [ "$SKIP_PUBLISH" != true ]; then
-    read -p "Create a git tag for this release? (y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        tag_name="v$(date +%Y%m%d-%H%M%S)"
-        git add .
-        git commit -m "chore: bump versions - decorators@$decorators_version, cdk@$cdk_version, consumers@$consumers_version" || true
-        git tag "$tag_name"
-        print_success "Created git tag: $tag_name"
-        echo "Don't forget to push: git push && git push --tags"
-    fi
-fi
+# if [ "$SKIP_PUBLISH" != true ]; then
+#     read -p "Create a git tag for this release? (y/N): " -n 1 -r
+#     echo
+#     if [[ $REPLY =~ ^[Yy]$ ]]; then
+#         tag_name="v$(date +%Y%m%d-%H%M%S)"
+#         git add .
+#         git commit -m "chore: bump versions - decorators@$decorators_version, cdk@$cdk_version, consumers@$consumers_version" || true
+#         git tag "$tag_name"
+#         print_success "Created git tag: $tag_name"
+#         echo "Don't forget to push: git push && git push --tags"
+#     fi
+# fi

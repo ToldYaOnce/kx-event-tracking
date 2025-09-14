@@ -1,7 +1,7 @@
 {
-  "timestamp": "2025-09-04T19:05:16.453Z",
+  "timestamp": "2025-09-13T22:45:16.608Z",
   "nodeVersion": "v20.19.1",
-  "packageVersion": "1.0.28",
+  "packageVersion": "1.0.31",
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.0.0",
     "@aws-sdk/client-eventbridge": "^3.0.0",

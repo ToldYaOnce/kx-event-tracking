@@ -6,3 +6,11 @@ export const getEventsQueueUrl = (): string => {
   return queueUrl;
 };
 
+export const getEventBusName = (): string => {
+  const busName = process.env.EVENT_BUS_NAME;
+  if (!busName) {
+    throw new Error('EVENT_BUS_NAME environment variable is required');
+  }
+  return busName;
+};
+

@@ -89,6 +89,9 @@ importers:
 
   packages/kx-events-decorators:
     dependencies:
+      '@aws-sdk/client-eventbridge':
+        specifier: ^3.879.0
+        version: 3.879.0
       '@aws-sdk/client-sqs':
         specifier: ^3.0.0
         version: 3.873.0

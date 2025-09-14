@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { TrackedEvent, LambdaEvent, LambdaContext } from './types';
 import { sendMessageToQueue } from './sqsClient';
+import { publishToEventBridge } from './eventBridgeClient';
 
 /**
  * Extracts clientId from request payload or context
@@ -89,7 +90,7 @@ export const extractPreviousEventId = (event: LambdaEvent): string | null => {
 };
 
 /**
- * Publishes a TrackedEvent to SQS
+ * Publishes a TrackedEvent to both SQS and EventBridge
  * Fire-and-forget: logs errors, doesn't throw
  */
 export const publishEvent = async (event: TrackedEvent): Promise<void> => {
@@ -100,8 +101,36 @@ export const publishEvent = async (event: TrackedEvent): Promise<void> => {
       return;
     }
 
+    // Dual publishing: SQS for guaranteed delivery + RDS, EventBridge for real-time
     const messageBody = JSON.stringify(event);
-    await sendMessageToQueue(messageBody);
+    
+    console.log(`🚀 Starting dual publish for event ${event.eventId}: ${event.entityType}.${event.eventType}`);
+    
+    // Fire both simultaneously (don't await both to avoid blocking)
+    const sqsPromise = sendMessageToQueue(messageBody);
+    const eventBridgePromise = publishToEventBridge(event);
+    
+    // Wait for both to complete - CRITICAL for EventBridge delivery
+    // SQS failures are critical, EventBridge failures are warnings
+    const results = await Promise.allSettled([sqsPromise, eventBridgePromise]);
+    
+    const sqsResult = results[0];
+    const eventBridgeResult = results[1];
+    
+    if (sqsResult.status === 'rejected') {
+      console.error(`🚨 SQS publishing FAILED for event ${event.eventId} (CRITICAL - data loss risk):`, sqsResult.reason);
+      // Re-throw SQS failures as they're critical for data persistence
+      throw sqsResult.reason;
+    } else {
+      console.log(`✅ SQS publishing SUCCESS for event ${event.eventId}: ${event.entityType}.${event.eventType} → Queue`);
+    }
+    
+    if (eventBridgeResult.status === 'rejected') {
+      console.warn(`⚠️ EventBridge publishing FAILED for event ${event.eventId} (real-time notifications disabled):`, eventBridgeResult.reason);
+      // Don't throw EventBridge failures - they're non-critical
+    } else {
+      console.log(`🚀 EventBridge publishing SUCCESS for event ${event.eventId}: ${event.entityType}.${event.eventType} → Real-time consumers`);
+    }
   } catch (error) {
     console.error('Failed to publish event:', error);
   }
